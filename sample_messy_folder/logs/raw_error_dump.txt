@@ -1,0 +1,6 @@
+2026-04-11 09:12:01 ERROR database timeout after 30000ms
+2026-04-11 09:12:04 ERROR retry failed for connection pool worker-7
+2026-04-11 09:12:09 WARN queue backlog reached 219 jobs
+2026-04-11 09:12:12 ERROR database timeout after 30000ms
+2026-04-11 09:12:18 ERROR database timeout after 30000ms
+Root cause hint: db-primary-01 did not respond to health checks.
