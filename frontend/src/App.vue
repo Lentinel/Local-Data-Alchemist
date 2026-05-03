@@ -17,6 +17,9 @@ import {
   Star,
   Clock,
   HardDrive,
+  Copy,
+  Settings,
+  Trash2,
 } from 'lucide-vue-next'
 
 const isSelectingFolder = ref(false)
@@ -69,6 +72,20 @@ const duplicateGroups = ref([])
 const selectedKeepFiles = ref({})
 const duplicateError = ref(null)
 const duplicateResult = ref(null)
+
+// 规则模板系统
+const isShowingTemplates = ref(false)
+const isLoadingTemplates = ref(false)
+const isApplyingTemplate = ref(false)
+const templates = ref([])
+const selectedTemplate = ref(null)
+const templateError = ref(null)
+const templateResult = ref(null)
+
+// 模板编辑相关
+const isEditingTemplate = ref(false)
+const editingTemplate = ref(null)
+const editingRule = ref(null)
 
 const categoryTone = {
   logs: 'text-amber-300 bg-amber-500/10 border-amber-400/20',
@@ -982,6 +999,232 @@ const processAllDuplicates = async () => {
     }
   }
 }
+
+// 规则模板系统方法
+const loadTemplates = async () => {
+  isLoadingTemplates.value = true
+  templateError.value = null
+
+  try {
+    const response = await axios.get('/api/list_templates')
+
+    if (response.data.status === 'success') {
+      templates.value = response.data.templates || []
+      addLog(`[系统] 已加载 ${templates.value.length} 个模板`, 'info')
+    } else {
+      templateError.value = '加载模板列表失败：服务器返回错误状态'
+      addLog(`[错误] 加载模板列表失败: ${templateError.value}`, 'error')
+    }
+  } catch (err) {
+    templateError.value = err.response?.data?.detail || '加载模板列表失败，请稍后再试'
+    addLog(`[错误] 加载模板列表失败: ${templateError.value}`, 'error')
+    console.error('Load templates error:', err)
+  } finally {
+    isLoadingTemplates.value = false
+  }
+}
+
+const showTemplates = async () => {
+  isShowingTemplates.value = true
+  isEditingTemplate.value = false
+  templateError.value = null
+  templateResult.value = null
+  await loadTemplates()
+}
+
+const hideTemplates = () => {
+  isShowingTemplates.value = false
+  isEditingTemplate.value = false
+  editingTemplate.value = null
+  editingRule.value = null
+  templateError.value = null
+  templateResult.value = null
+}
+
+const applyTemplate = async (template) => {
+  if (!targetPath.value) {
+    templateError.value = '无法应用模板：缺少目标目录'
+    return
+  }
+
+  isApplyingTemplate.value = true
+  templateError.value = null
+
+  try {
+    addLog(`[系统] 正在应用模板：${template.name}...`, 'info')
+
+    const response = await axios.post('/api/apply_template', {
+      target_path: targetPath.value,
+      template_id: template.id
+    })
+
+    if (response.data.status === 'success') {
+      const data = response.data
+
+      mode.value = data.mode || 'execute'
+      analysis.value = data.analysis || null
+      files.value = data.files || []
+      fileInventory.value = data.file_inventory || []
+      actionPlan.value = data.plan || []
+      reasoningTrace.value = data.reasoning_trace || []
+      templateResult.value = data
+
+      addLog(`[系统] 模板应用成功，生成 ${actionPlan.value.length} 条整理计划`, 'info')
+
+      hideTemplates()
+    } else {
+      templateError.value = '应用模板失败：服务器返回错误状态'
+      addLog(`[错误] 应用模板失败: ${templateError.value}`, 'error')
+    }
+  } catch (err) {
+    templateError.value = err.response?.data?.detail || '应用模板失败，请稍后再试'
+    addLog(`[错误] 应用模板失败: ${templateError.value}`, 'error')
+    console.error('Apply template error:', err)
+  } finally {
+    isApplyingTemplate.value = false
+  }
+}
+
+const createNewTemplate = () => {
+  editingTemplate.value = {
+    id: '',
+    name: '新建模板',
+    description: '描述这个模板的用途...',
+    icon: '📁',
+    rules: []
+  }
+  isEditingTemplate.value = true
+  editingRule.value = null
+}
+
+const editTemplate = (template) => {
+  if (template.is_builtin) {
+    addLog('[提示] 内置模板不可编辑，但可以复制', 'info')
+    return
+  }
+
+  editingTemplate.value = JSON.parse(JSON.stringify(template))
+  isEditingTemplate.value = true
+  editingRule.value = null
+}
+
+const saveTemplate = async () => {
+  if (!editingTemplate.value) {
+    return
+  }
+
+  if (!editingTemplate.value.name.trim()) {
+    templateError.value = '模板名称不能为空'
+    return
+  }
+
+  try {
+    const response = await axios.post('/api/save_template', {
+      template: editingTemplate.value
+    })
+
+    if (response.data.status === 'success') {
+      addLog(`[系统] 模板 "${editingTemplate.value.name}" 保存成功`, 'info')
+      isEditingTemplate.value = false
+      editingTemplate.value = null
+      editingRule.value = null
+      await loadTemplates()
+    } else {
+      templateError.value = '保存模板失败：服务器返回错误状态'
+      addLog(`[错误] 保存模板失败: ${templateError.value}`, 'error')
+    }
+  } catch (err) {
+    templateError.value = err.response?.data?.detail || '保存模板失败，请稍后再试'
+    addLog(`[错误] 保存模板失败: ${templateError.value}`, 'error')
+    console.error('Save template error:', err)
+  }
+}
+
+const deleteTemplate = async (template) => {
+  if (template.is_builtin) {
+    templateError.value = '内置模板不可删除'
+    return
+  }
+
+  if (!confirm(`确定要删除模板 "${template.name}" 吗？此操作不可恢复。`)) {
+    return
+  }
+
+  try {
+    const response = await axios.post('/api/delete_template', {
+      template_id: template.id
+    })
+
+    if (response.data.status === 'success') {
+      addLog(`[系统] 模板 "${template.name}" 已删除`, 'info')
+      await loadTemplates()
+    } else {
+      templateError.value = '删除模板失败：服务器返回错误状态'
+      addLog(`[错误] 删除模板失败: ${templateError.value}`, 'error')
+    }
+  } catch (err) {
+    templateError.value = err.response?.data?.detail || '删除模板失败，请稍后再试'
+    addLog(`[错误] 删除模板失败: ${templateError.value}`, 'error')
+    console.error('Delete template error:', err)
+  }
+}
+
+const addNewRule = () => {
+  if (!editingTemplate.value) {
+    return
+  }
+
+  const newRule = {
+    rule_id: `rule-${Date.now()}`,
+    name: '新规则',
+    match_extensions: [],
+    match_pattern: '',
+    match_category: '',
+    action: 'move',
+    target_path: '',
+    reason: '',
+    priority: 0
+  }
+
+  editingTemplate.value.rules.push(newRule)
+  editingRule.value = newRule
+}
+
+const editRule = (rule) => {
+  editingRule.value = rule
+}
+
+const deleteRule = (rule) => {
+  if (!editingTemplate.value) {
+    return
+  }
+
+  const index = editingTemplate.value.rules.indexOf(rule)
+  if (index > -1) {
+    editingTemplate.value.rules.splice(index, 1)
+    if (editingRule.value === rule) {
+      editingRule.value = null
+    }
+  }
+}
+
+const duplicateTemplate = (template) => {
+  editingTemplate.value = {
+    id: '',
+    name: `${template.name} (副本)`,
+    description: template.description || '',
+    icon: template.icon || '📁',
+    rules: JSON.parse(JSON.stringify(template.rules || []))
+  }
+  isEditingTemplate.value = true
+  editingRule.value = null
+}
+
+const cancelEditTemplate = () => {
+  isEditingTemplate.value = false
+  editingTemplate.value = null
+  editingRule.value = null
+}
 </script>
 
 <template>
@@ -1462,6 +1705,14 @@ const processAllDuplicates = async () => {
               @click="showDuplicates"
             >
               检测重复文件
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-fuchsia-400/30 px-4 py-2 text-fuchsia-100 bg-fuchsia-500/10 hover:bg-fuchsia-500/20 transition-colors text-sm"
+              :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
+              @click="showTemplates"
+            >
+              规则模板
             </button>
           </div>
         </div>
@@ -2035,6 +2286,368 @@ const processAllDuplicates = async () => {
               type="button"
               class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
               @click="hideHistory"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 规则模板系统弹窗 -->
+      <div v-if="isShowingTemplates" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div class="relative w-full max-w-6xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
+          <!-- 弹窗头部 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10">
+            <div class="flex items-center gap-3">
+              <Sparkles :size="24" class="text-fuchsia-400" />
+              <div>
+                <p class="font-medium text-slate-100">
+                  {{ isEditingTemplate ? '编辑模板' : '规则模板库' }}
+                </p>
+                <p class="text-xs text-slate-400 font-mono">
+                  <template v-if="isEditingTemplate">
+                    {{ editingTemplate?.name || '新建模板' }} · {{ editingTemplate?.rules?.length || 0 }} 条规则
+                  </template>
+                  <template v-else>
+                    共 {{ templates.length }} 个模板 · {{ templates.filter(t => t.is_builtin).length }} 个内置
+                  </template>
+                </p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                v-if="!isEditingTemplate"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-fuchsia-400/30 bg-fuchsia-500/10 hover:bg-fuchsia-500/20 transition-colors text-fuchsia-100 text-xs"
+                :disabled="isLoadingTemplates"
+                @click="createNewTemplate"
+              >
+                新建模板
+              </button>
+              <button
+                v-if="isEditingTemplate"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-xs"
+                @click="cancelEditTemplate"
+              >
+                取消
+              </button>
+              <button
+                v-if="isEditingTemplate"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-fuchsia-400/30 bg-fuchsia-500/10 hover:bg-fuchsia-500/20 transition-colors text-fuchsia-100 text-xs"
+                :disabled="!editingTemplate?.name"
+                @click="saveTemplate"
+              >
+                保存模板
+              </button>
+              <button
+                type="button"
+                class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                @click="hideTemplates"
+                title="关闭"
+              >
+                <X :size="20" class="text-slate-300" />
+              </button>
+            </div>
+          </div>
+
+          <!-- 弹窗内容 -->
+          <div v-if="!isEditingTemplate" class="flex-1 overflow-auto p-4">
+            <!-- 加载中 -->
+            <div v-if="isLoadingTemplates" class="flex items-center justify-center h-64">
+              <div class="flex items-center gap-3 text-slate-400">
+                <Loader2 :size="24" class="animate-spin" />
+                <p>正在加载模板列表...</p>
+              </div>
+            </div>
+
+            <!-- 错误显示 -->
+            <div v-else-if="templateError" class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400">
+              <AlertCircle :size="20" />
+              <p>{{ templateError }}</p>
+            </div>
+
+            <!-- 空状态 -->
+            <div v-else-if="templates.length === 0" class="flex flex-col items-center justify-center h-64 text-slate-400">
+              <Sparkles :size="48" class="mb-3 text-slate-600" />
+              <p class="text-lg font-medium">暂无模板</p>
+              <p class="text-sm mt-1">点击"新建模板"创建您的第一个整理规则</p>
+            </div>
+
+            <!-- 模板列表 -->
+            <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div
+                v-for="template in templates"
+                :key="template.id"
+                class="p-4 rounded-lg bg-slate-950/70 border border-white/10 hover:border-fuchsia-400/30 transition-all cursor-pointer"
+              >
+                <!-- 模板头部 -->
+                <div class="flex items-start justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <span class="text-2xl">{{ template.icon }}</span>
+                    <div>
+                      <p class="font-medium text-slate-200">{{ template.name }}</p>
+                      <span
+                        v-if="template.is_builtin"
+                        class="inline-block px-1.5 py-0.5 rounded text-xs font-medium text-sky-300 bg-sky-500/10 border border-sky-400/20"
+                      >
+                        内置
+                      </span>
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-1">
+                    <button
+                      type="button"
+                      class="p-1.5 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                      @click.stop="duplicateTemplate(template)"
+                      title="复制模板"
+                    >
+                      <Copy :size="14" class="text-slate-400" />
+                    </button>
+                    <button
+                      v-if="!template.is_builtin"
+                      type="button"
+                      class="p-1.5 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                      @click.stop="editTemplate(template)"
+                      title="编辑模板"
+                    >
+                      <Settings :size="14" class="text-slate-400" />
+                    </button>
+                    <button
+                      v-if="!template.is_builtin"
+                      type="button"
+                      class="p-1.5 rounded-lg border border-red-400/20 bg-red-500/5 hover:bg-red-500/10 transition-colors"
+                      @click.stop="deleteTemplate(template)"
+                      title="删除模板"
+                    >
+                      <Trash2 :size="14" class="text-red-400" />
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 模板描述 -->
+                <p class="text-sm text-slate-400 mb-3 line-clamp-2">{{ template.description }}</p>
+
+                <!-- 规则统计 -->
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-slate-500">
+                    {{ template.rules_count || template.rules?.length || 0 }} 条规则
+                  </span>
+                  <button
+                    type="button"
+                    class="px-3 py-1 rounded-lg border border-fuchsia-400/30 bg-fuchsia-500/10 hover:bg-fuchsia-500/20 transition-colors text-fuchsia-100 text-xs"
+                    :disabled="isApplyingTemplate || !targetPath"
+                    @click.stop="applyTemplate(template)"
+                  >
+                    {{ isApplyingTemplate ? '应用中...' : '应用模板' }}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 模板编辑视图 -->
+          <div v-else class="flex-1 overflow-hidden flex">
+            <!-- 左侧：规则列表 -->
+            <div class="w-1/3 border-r border-white/10 flex flex-col">
+              <div class="p-3 border-b border-white/10 flex items-center justify-between">
+                <span class="text-sm font-medium text-slate-200">规则列表</span>
+                <button
+                  type="button"
+                  class="px-2 py-1 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-xs"
+                  @click="addNewRule"
+                >
+                  + 添加规则
+                </button>
+              </div>
+              <div class="flex-1 overflow-auto p-2">
+                <div
+                  v-if="!editingTemplate?.rules?.length"
+                  class="flex flex-col items-center justify-center h-32 text-slate-500 text-sm"
+                >
+                  <p>暂无规则</p>
+                  <p class="text-xs">点击"添加规则"开始</p>
+                </div>
+                <div
+                  v-else
+                  v-for="(rule, index) in editingTemplate.rules"
+                  :key="rule.rule_id"
+                  class="p-2 rounded-lg mb-2 cursor-pointer transition-colors"
+                  :class="[
+                    editingRule === rule
+                      ? 'bg-fuchsia-500/10 border border-fuchsia-400/30'
+                      : 'bg-slate-900/50 border border-white/5 hover:bg-slate-800/50'
+                  ]"
+                  @click="editRule(rule)"
+                >
+                  <div class="flex items-center justify-between">
+                    <span class="text-sm font-medium text-slate-200">{{ rule.name }}</span>
+                    <button
+                      type="button"
+                      class="p-1 rounded hover:bg-red-500/10 text-red-400 opacity-60 hover:opacity-100"
+                      @click.stop="deleteRule(rule)"
+                    >
+                      <X :size="12" />
+                    </button>
+                  </div>
+                  <div class="text-xs text-slate-500 mt-1">
+                    {{ rule.action === 'move' ? '移动' : rule.action === 'rename_and_move' ? '重命名并移动' : rule.action === 'delete' ? '删除' : '保留' }}
+                    {{ rule.match_extensions?.length ? `· ${rule.match_extensions.join(', ')}` : '' }}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右侧：规则编辑或模板基本信息 -->
+            <div class="flex-1 flex flex-col overflow-auto">
+              <!-- 当没有选中规则时，显示模板基本信息 -->
+              <div v-if="!editingRule && editingTemplate" class="p-4 space-y-4">
+                <h3 class="text-sm font-medium text-slate-200 border-b border-white/10 pb-2">模板基本信息</h3>
+                
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">模板名称</label>
+                  <input
+                    type="text"
+                    v-model="editingTemplate.name"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                    placeholder="输入模板名称"
+                  >
+                </div>
+
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">图标 (emoji)</label>
+                  <input
+                    type="text"
+                    v-model="editingTemplate.icon"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                    placeholder="📁"
+                  >
+                </div>
+
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">描述</label>
+                  <textarea
+                    v-model="editingTemplate.description"
+                    rows="3"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono resize-none"
+                    placeholder="描述这个模板的用途..."
+                  />
+                </div>
+              </div>
+
+              <!-- 当选中规则时，显示规则编辑 -->
+              <div v-else-if="editingRule" class="p-4 space-y-4">
+                <h3 class="text-sm font-medium text-slate-200 border-b border-white/10 pb-2">规则编辑</h3>
+                
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">规则名称</label>
+                  <input
+                    type="text"
+                    v-model="editingRule.name"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                    placeholder="例如：PDF文档"
+                  >
+                </div>
+
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">匹配扩展名 (逗号分隔，如 .pdf,.doc)</label>
+                  <input
+                    type="text"
+                    :value="editingRule.match_extensions?.join(',')"
+                    @input="editingRule.match_extensions = $event.target.value.split(',').map(s => s.trim()).filter(s => s)"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                    placeholder=".pdf,.doc,.docx"
+                  >
+                </div>
+
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">匹配正则表达式 (可选，匹配文件名或路径)</label>
+                  <input
+                    type="text"
+                    v-model="editingRule.match_pattern"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                    placeholder="例如：screenshot|截图|error"
+                  >
+                </div>
+
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">匹配分类 (可选)</label>
+                  <select
+                    v-model="editingRule.match_category"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                  >
+                    <option value="">不按分类匹配</option>
+                    <option value="images">图片 (images)</option>
+                    <option value="documents">文档 (documents)</option>
+                    <option value="archives">压缩包 (archives)</option>
+                    <option value="code">代码 (code)</option>
+                    <option value="logs">日志 (logs)</option>
+                    <option value="unknown">未知 (unknown)</option>
+                  </select>
+                </div>
+
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">操作类型</label>
+                  <select
+                    v-model="editingRule.action"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                  >
+                    <option value="move">移动文件</option>
+                    <option value="rename_and_move">重命名并移动</option>
+                    <option value="delete">删除文件</option>
+                    <option value="keep">保留 (不操作)</option>
+                  </select>
+                </div>
+
+                <div v-if="editingRule.action !== 'delete' && editingRule.action !== 'keep'" class="space-y-2">
+                  <label class="text-xs text-slate-400">
+                    目标路径模板 (支持占位符: {name} 文件名, {date} 日期, {stem} 无扩展名文件名)
+                  </label>
+                  <input
+                    type="text"
+                    v-model="editingRule.target_path"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                    placeholder="例如：documents/pdf/{name} 或 images/screenshots/{date}_{name}"
+                  >
+                </div>
+
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">规则理由 (将显示在整理计划中)</label>
+                  <textarea
+                    v-model="editingRule.reason"
+                    rows="2"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono resize-none"
+                    placeholder="例如：PDF文档归档到pdf目录"
+                  />
+                </div>
+
+                <div class="space-y-2">
+                  <label class="text-xs text-slate-400">优先级 (数字越大优先级越高)</label>
+                  <input
+                    type="number"
+                    v-model.number="editingRule.priority"
+                    class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-fuchsia-400 font-mono"
+                  >
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 弹窗底部 -->
+          <div class="p-4 border-t border-white/10 flex items-center justify-between">
+            <div class="text-xs text-slate-500 font-mono">
+              <template v-if="isEditingTemplate">
+                提示：内置模板不可编辑，但可以复制后修改
+              </template>
+              <template v-else>
+                提示：选择一个模板并点击"应用模板"即可生成整理计划
+              </template>
+            </div>
+            <button
+              type="button"
+              class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+              @click="hideTemplates"
             >
               关闭
             </button>
