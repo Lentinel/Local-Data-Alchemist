@@ -4,7 +4,7 @@ import shutil
 import subprocess
 import uuid
 from collections import Counter
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import hashlib
 import re
 import base64
@@ -18,7 +18,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import httpx
 from openai import APIConnectionError, AuthenticationError, OpenAI
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+from typing import Literal
+
 
 ENV_PATH = Path(__file__).resolve().with_name(".env")
 load_dotenv(dotenv_path=ENV_PATH, override=True)
@@ -117,84 +125,174 @@ TEXT_EXTENSIONS = {
 
 
 class FileInfo(BaseModel):
-    name: str
-    path: str
-    extension: str = ""
-    category: str = "unknown"
-    size: int = 0
+    name: str = Field(..., min_length=1, description="文件名")
+    path: str = Field(..., min_length=1, description="文件相对路径")
+    extension: str = Field(default="", description="文件扩展名")
+    category: str = Field(default="unknown", description="文件分类")
+    size: int = Field(default=0, ge=0, description="文件大小(字节)")
 
 
 class PlanRequest(BaseModel):
-    target_path: str
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
 
 
 class FolderRequest(BaseModel):
-    target_path: str
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
+
+
+ActionType = Literal["rename_and_move", "move", "delete", "keep"]
 
 
 class ActionPlanItem(BaseModel):
-    file: str
-    action: str
-    target_path: str | None = None
-    reason: str
-    extracted_info: dict | None = None
+    file: str = Field(..., min_length=1, description="源文件相对路径")
+    action: ActionType = Field(..., description="操作类型: rename_and_move | move | delete | keep")
+    target_path: str | None = Field(default=None, description="目标相对路径（move/rename_and_move 操作必填）")
+    reason: str = Field(default="", description="操作理由")
+    extracted_info: dict | None = Field(default=None, description="提取的结构化信息")
+
+    @field_validator("file")
+    @classmethod
+    def validate_file_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("文件路径不能为空或仅包含空白字符")
+        return v
+
+    @model_validator(mode="after")
+    def validate_action_requirements(self) -> "ActionPlanItem":
+        if self.action in {"move", "rename_and_move"}:
+            if not self.target_path or not str(self.target_path).strip():
+                raise ValueError(f"{self.action} 操作需要提供有效的 target_path")
+        return self
 
 
 class ExecutePlanRequest(BaseModel):
-    target_path: str
-    plan: list[ActionPlanItem] = Field(default_factory=list)
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    plan: list[ActionPlanItem] = Field(default_factory=list, description="执行计划列表")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
 
 
 class UndoPlanRequest(BaseModel):
-    target_path: str
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
 
 
 class FilePreviewRequest(BaseModel):
-    target_path: str
-    file_path: str
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    file_path: str = Field(..., min_length=1, description="要预览的文件相对路径")
+
+    @field_validator("target_path", "file_path")
+    @classmethod
+    def validate_paths_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("路径不能为空或仅包含空白字符")
+        return v
 
 
 class ListHistoryRequest(BaseModel):
-    target_path: str
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
 
 
 class GetHistoryRequest(BaseModel):
-    target_path: str
-    history_id: str
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    history_id: str = Field(..., min_length=1, description="历史记录ID")
+
+    @field_validator("target_path", "history_id")
+    @classmethod
+    def validate_fields_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("字段不能为空或仅包含空白字符")
+        return v
 
 
 class DetectDuplicatesRequest(BaseModel):
-    target_path: str
-    fast_mode: bool = True
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    fast_mode: bool = Field(default=True, description="是否使用快速检测模式")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
 
 
 class KeepDuplicateRequest(BaseModel):
-    target_path: str
-    keep_file: str
-    duplicate_files: list[str]
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    keep_file: str = Field(..., min_length=1, description="要保留的文件路径")
+    duplicate_files: list[str] = Field(..., description="要删除的重复文件列表")
+
+    @field_validator("target_path", "keep_file")
+    @classmethod
+    def validate_fields_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("字段不能为空或仅包含空白字符")
+        return v
+
+    @field_validator("duplicate_files")
+    @classmethod
+    def validate_duplicate_files_not_empty(cls, v: list[str]) -> list[str]:
+        if not v or len(v) == 0:
+            raise ValueError("重复文件列表不能为空")
+        for f in v:
+            if not f or not f.strip():
+                raise ValueError("重复文件列表中包含空路径")
+        return v
 
 
 class TemplateRule(BaseModel):
-    rule_id: str
-    name: str
-    match_extensions: list[str] = Field(default_factory=list)
-    match_pattern: str = ""
-    match_category: str = ""
-    action: str
-    target_path: str = ""
-    reason: str
-    priority: int = 0
+    rule_id: str = Field(..., min_length=1, description="规则ID")
+    name: str = Field(..., min_length=1, description="规则名称")
+    match_extensions: list[str] = Field(default_factory=list, description="匹配的扩展名列表")
+    match_pattern: str = Field(default="", description="匹配正则表达式")
+    match_category: str = Field(default="", description="匹配的分类")
+    action: ActionType = Field(..., description="操作类型")
+    target_path: str = Field(default="", description="目标路径模板")
+    reason: str = Field(default="", description="操作理由")
+    priority: int = Field(default=0, description="优先级")
 
 
 class AlchemyTemplate(BaseModel):
-    id: str
-    name: str
-    description: str
-    icon: str = "📁"
-    is_builtin: bool = False
-    created_at: str = ""
-    updated_at: str = ""
-    rules: list[TemplateRule] = Field(default_factory=list)
+    id: str = Field(..., min_length=1, description="模板ID")
+    name: str = Field(..., min_length=1, description="模板名称")
+    description: str = Field(..., description="模板描述")
+    icon: str = Field(default="📁", description="图标")
+    is_builtin: bool = Field(default=False, description="是否为内置模板")
+    created_at: str = Field(default="", description="创建时间")
+    updated_at: str = Field(default="", description="更新时间")
+    rules: list[TemplateRule] = Field(default_factory=list, description="规则列表")
 
 
 class ListTemplatesRequest(BaseModel):
@@ -202,62 +300,176 @@ class ListTemplatesRequest(BaseModel):
 
 
 class GetTemplateRequest(BaseModel):
-    template_id: str
+    template_id: str = Field(..., min_length=1, description="模板ID")
+
+    @field_validator("template_id")
+    @classmethod
+    def validate_template_id_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("模板ID不能为空或仅包含空白字符")
+        return v
 
 
 class SaveTemplateRequest(BaseModel):
-    template: dict
+    template: dict = Field(..., description="模板数据")
+
+    @field_validator("template")
+    @classmethod
+    def validate_template_not_empty(cls, v: dict) -> dict:
+        if not v:
+            raise ValueError("模板数据不能为空")
+        return v
 
 
 class DeleteTemplateRequest(BaseModel):
-    template_id: str
+    template_id: str = Field(..., min_length=1, description="模板ID")
+
+    @field_validator("template_id")
+    @classmethod
+    def validate_template_id_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("模板ID不能为空或仅包含空白字符")
+        return v
 
 
 class ApplyTemplateRequest(BaseModel):
-    target_path: str
-    template_id: str
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    template_id: str = Field(..., min_length=1, description="模板ID")
+
+    @field_validator("target_path", "template_id")
+    @classmethod
+    def validate_fields_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("字段不能为空或仅包含空白字符")
+        return v
+
+
+RenameRuleType = Literal[
+    "prefix", "suffix", "find_replace", "regex", 
+    "numbering", "date_prefix", "date_suffix"
+]
 
 
 class RenameRule(BaseModel):
-    rule_type: str
-    prefix: str = ""
-    suffix: str = ""
-    find_text: str = ""
-    replace_text: str = ""
-    regex_pattern: str = ""
-    regex_replacement: str = ""
-    start_number: int = 1
-    number_padding: int = 3
-    number_separator: str = "_"
-    number_position: str = "prefix"
+    rule_type: RenameRuleType = Field(..., description="重命名规则类型")
+    prefix: str = Field(default="", description="前缀")
+    suffix: str = Field(default="", description="后缀")
+    find_text: str = Field(default="", description="要查找的文本")
+    replace_text: str = Field(default="", description="替换文本")
+    regex_pattern: str = Field(default="", description="正则表达式模式")
+    regex_replacement: str = Field(default="", description="正则表达式替换")
+    start_number: int = Field(default=1, ge=0, description="起始编号")
+    number_padding: int = Field(default=3, ge=1, le=10, description="编号填充位数")
+    number_separator: str = Field(default="_", description="编号分隔符")
+    number_position: Literal["prefix", "suffix", "replace"] = Field(default="prefix", description="编号位置")
 
 
 class RenamePreviewRequest(BaseModel):
-    target_path: str
-    selected_files: list[str]
-    rules: list[RenameRule]
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    selected_files: list[str] = Field(..., description="选中的文件列表")
+    rules: list[RenameRule] = Field(..., description="重命名规则列表")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
+
+    @field_validator("selected_files")
+    @classmethod
+    def validate_selected_files_not_empty(cls, v: list[str]) -> list[str]:
+        if not v or len(v) == 0:
+            raise ValueError("选中的文件列表不能为空")
+        for f in v:
+            if not f or not f.strip():
+                raise ValueError("选中的文件列表中包含空路径")
+        return v
+
+    @field_validator("rules")
+    @classmethod
+    def validate_rules_not_empty(cls, v: list[RenameRule]) -> list[RenameRule]:
+        if not v or len(v) == 0:
+            raise ValueError("重命名规则列表不能为空")
+        return v
 
 
 class RenameExecuteRequest(BaseModel):
-    target_path: str
-    rename_plan: list[dict]
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    rename_plan: list[dict] = Field(..., description="重命名计划列表")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
+
+    @field_validator("rename_plan")
+    @classmethod
+    def validate_rename_plan_not_empty(cls, v: list[dict]) -> list[dict]:
+        if not v or len(v) == 0:
+            raise ValueError("重命名计划列表不能为空")
+        return v
 
 
 class DashboardStatsRequest(BaseModel):
-    target_path: str
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
 
 
 class MultiTargetRequest(BaseModel):
-    target_paths: list[str]
+    target_paths: list[str] = Field(..., description="目标目录路径列表")
+
+    @field_validator("target_paths")
+    @classmethod
+    def validate_target_paths_not_empty(cls, v: list[str]) -> list[str]:
+        if not v or len(v) == 0:
+            raise ValueError("目标目录路径列表不能为空")
+        valid_paths = []
+        for path in v:
+            if path is None or not isinstance(path, str):
+                raise ValueError("目标路径必须是字符串类型")
+            if not path.strip():
+                raise ValueError("目标路径列表中包含空路径")
+            valid_paths.append(path)
+        return valid_paths
 
 
 class MultiExecuteRequest(BaseModel):
-    targets: list[dict]
+    targets: list[dict] = Field(..., description="多目录执行计划列表")
+
+    @field_validator("targets")
+    @classmethod
+    def validate_targets_not_empty(cls, v: list[dict]) -> list[dict]:
+        if not v or len(v) == 0:
+            raise ValueError("执行计划列表不能为空")
+        return v
 
 
 class PreviewPlanRequest(BaseModel):
-    target_path: str
-    plan: list[ActionPlanItem]
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    plan: list[ActionPlanItem] = Field(..., min_length=1, description="执行计划列表")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
+
+    @field_validator("plan")
+    @classmethod
+    def validate_plan_not_empty(cls, v: list[ActionPlanItem]) -> list[ActionPlanItem]:
+        if not v or len(v) == 0:
+            raise ValueError("执行计划列表不能为空")
+        return v
 
 
 def preview_plan_impl(

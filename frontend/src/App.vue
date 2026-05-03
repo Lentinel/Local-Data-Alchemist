@@ -552,7 +552,7 @@ const openNativeFolderDialog = async () => {
     addLog(`[AI] 准备提交 ${files.value.length} 个文件摘要给大模型`, 'ai')
     await generateAlchemyPlan()
   } catch (err) {
-    error.value = err.response?.data?.detail || '本地目录选择失败，请稍后再试'
+    error.value = extractErrorMessage(err)
     addLog(`[错误] 本地目录锁定失败: ${error.value}`, 'error')
     console.error('Select folder error:', err)
   } finally {
@@ -590,7 +590,7 @@ const lockManualTarget = async () => {
     addLog('[AI] 准备对手动路径进行本地嗅探与计划生成', 'ai')
     await generateAlchemyPlan()
   } catch (err) {
-    error.value = err.response?.data?.detail || '本地路径校验失败，请检查目录是否存在'
+    error.value = extractErrorMessage(err)
     addLog(`[错误] 本地路径校验失败: ${error.value}`, 'error')
     console.error('Lock folder error:', err)
   } finally {
@@ -630,7 +630,7 @@ const generateAlchemyPlan = async () => {
       }
     })
   } catch (err) {
-    error.value = err.response?.data?.detail || 'AI 炼金计划生成失败，请稍后再试'
+    error.value = extractErrorMessage(err)
     addLog(`[错误] LLM 计划生成失败: ${error.value}`, 'error')
     console.error('Generate plan error:', err)
   } finally {
@@ -672,7 +672,7 @@ const loadPlanPreview = async () => {
 
     return true
   } catch (err) {
-    planPreviewError.value = err.response?.data?.detail || '计划预检查失败'
+    planPreviewError.value = extractErrorMessage(err)
     addLog(`[错误] 计划预检查失败: ${planPreviewError.value}`, 'error')
     console.error('Preview plan error:', err)
     return false
@@ -728,7 +728,7 @@ const executePlanDirectly = async () => {
     })
     addLog(`[系统] 快照已写入: ${response.data.snapshot_path || response.data.snapshot}`, 'info')
   } catch (err) {
-    error.value = err.response?.data?.detail || '执行炼金计划失败，请检查计划内容'
+    error.value = extractErrorMessage(err)
     addLog(`[错误] 执行炼金计划失败: ${error.value}`, 'error')
     console.error('Execute plan error:', err)
   } finally {
@@ -793,7 +793,7 @@ const undoPlan = async () => {
     undoMessage.value = response.data.message || '已恢复到炼金前状态'
     addLog(`[系统] ${undoMessage.value}`, 'info')
   } catch (err) {
-    error.value = err.response?.data?.detail || '时光倒流失败，请检查 snapshot 状态'
+    error.value = extractErrorMessage(err)
     addLog(`[错误] 时光倒流失败: ${error.value}`, 'error')
     console.error('Undo plan error:', err)
   } finally {
@@ -938,7 +938,7 @@ const previewFile = async (file) => {
       addLog(`[错误] 文件预览失败: ${previewError.value}`, 'error')
     }
   } catch (err) {
-    previewError.value = err.response?.data?.detail || '文件预览失败，请稍后再试'
+    previewError.value = extractErrorMessage(err)
     addLog(`[错误] 文件预览失败: ${previewError.value}`, 'error')
     console.error('Preview file error:', err)
   }
@@ -975,7 +975,7 @@ const loadHistory = async () => {
       addLog(`[错误] 历史记录加载失败: ${historyError.value}`, 'error')
     }
   } catch (err) {
-    historyError.value = err.response?.data?.detail || '加载历史记录失败，请稍后再试'
+    historyError.value = extractErrorMessage(err)
     addLog(`[错误] 历史记录加载失败: ${historyError.value}`, 'error')
     console.error('Load history error:', err)
   } finally {
@@ -1017,7 +1017,7 @@ const viewHistoryDetail = async (historyItem) => {
       addLog(`[错误] 历史记录详情加载失败: ${historyError.value}`, 'error')
     }
   } catch (err) {
-    historyError.value = err.response?.data?.detail || '加载历史记录详情失败，请稍后再试'
+    historyError.value = extractErrorMessage(err)
     addLog(`[错误] 历史记录详情加载失败: ${historyError.value}`, 'error')
     console.error('Load history detail error:', err)
   }
@@ -1125,7 +1125,7 @@ const detectDuplicates = async () => {
       addLog(`[错误] 重复文件检测失败: ${duplicateError.value}`, 'error')
     }
   } catch (err) {
-    duplicateError.value = err.response?.data?.detail || '检测重复文件失败，请稍后再试'
+    duplicateError.value = extractErrorMessage(err)
     addLog(`[错误] 重复文件检测失败: ${duplicateError.value}`, 'error')
     console.error('Detect duplicates error:', err)
   } finally {
@@ -1200,7 +1200,7 @@ const processKeepSelected = async (groupIndex) => {
       addLog(`[错误] 处理重复文件失败: ${duplicateError.value}`, 'error')
     }
   } catch (err) {
-    duplicateError.value = err.response?.data?.detail || '处理重复文件失败，请稍后再试'
+    duplicateError.value = extractErrorMessage(err)
     addLog(`[错误] 处理重复文件失败: ${duplicateError.value}`, 'error')
     console.error('Keep duplicate error:', err)
   } finally {
@@ -1236,7 +1236,7 @@ const loadTemplates = async () => {
       addLog(`[错误] 加载模板列表失败: ${templateError.value}`, 'error')
     }
   } catch (err) {
-    templateError.value = err.response?.data?.detail || '加载模板列表失败，请稍后再试'
+    templateError.value = extractErrorMessage(err)
     addLog(`[错误] 加载模板列表失败: ${templateError.value}`, 'error')
     console.error('Load templates error:', err)
   } finally {
@@ -1297,7 +1297,7 @@ const applyTemplate = async (template) => {
       addLog(`[错误] 应用模板失败: ${templateError.value}`, 'error')
     }
   } catch (err) {
-    templateError.value = err.response?.data?.detail || '应用模板失败，请稍后再试'
+    templateError.value = extractErrorMessage(err)
     addLog(`[错误] 应用模板失败: ${templateError.value}`, 'error')
     console.error('Apply template error:', err)
   } finally {
@@ -1354,7 +1354,7 @@ const saveTemplate = async () => {
       addLog(`[错误] 保存模板失败: ${templateError.value}`, 'error')
     }
   } catch (err) {
-    templateError.value = err.response?.data?.detail || '保存模板失败，请稍后再试'
+    templateError.value = extractErrorMessage(err)
     addLog(`[错误] 保存模板失败: ${templateError.value}`, 'error')
     console.error('Save template error:', err)
   }
@@ -1383,7 +1383,7 @@ const deleteTemplate = async (template) => {
       addLog(`[错误] 删除模板失败: ${templateError.value}`, 'error')
     }
   } catch (err) {
-    templateError.value = err.response?.data?.detail || '删除模板失败，请稍后再试'
+    templateError.value = extractErrorMessage(err)
     addLog(`[错误] 删除模板失败: ${templateError.value}`, 'error')
     console.error('Delete template error:', err)
   }
@@ -1568,7 +1568,7 @@ const generateRenamePreview = async () => {
       addLog(`[错误] 生成重命名预览失败: ${renameError.value}`, 'error')
     }
   } catch (err) {
-    renameError.value = err.response?.data?.detail || '生成重命名预览失败，请稍后再试'
+    renameError.value = extractErrorMessage(err)
     addLog(`[错误] 生成重命名预览失败: ${renameError.value}`, 'error')
     console.error('Generate rename preview error:', err)
   } finally {
@@ -1623,7 +1623,7 @@ const executeRename = async () => {
       addLog(`[错误] 执行重命名失败: ${renameError.value}`, 'error')
     }
   } catch (err) {
-    renameError.value = err.response?.data?.detail || '执行重命名失败，请稍后再试'
+    renameError.value = extractErrorMessage(err)
     addLog(`[错误] 执行重命名失败: ${renameError.value}`, 'error')
     console.error('Execute rename error:', err)
   } finally {
@@ -1691,7 +1691,7 @@ const loadDashboardStats = async () => {
       addLog(`[错误] 生成仪表盘统计失败: ${dashboardError.value}`, 'error')
     }
   } catch (err) {
-    dashboardError.value = err.response?.data?.detail || '生成报表失败，请稍后再试'
+    dashboardError.value = extractErrorMessage(err)
     addLog(`[错误] 生成仪表盘统计失败: ${dashboardError.value}`, 'error')
     console.error('Load dashboard stats error:', err)
   } finally {
@@ -1820,7 +1820,7 @@ const addMultiTargetViaDialog = async () => {
     addLog(`[系统] 已添加目录: ${path}`, 'info')
     multiError.value = null
   } catch (err) {
-    multiError.value = err.response?.data?.detail || '添加目录失败'
+    multiError.value = extractErrorMessage(err)
     addLog(`[错误] 添加目录失败: ${multiError.value}`, 'error')
   }
 }
@@ -1857,7 +1857,7 @@ const performMultiScan = async () => {
       addLog(`[错误] 多目录扫描失败: ${multiError.value}`, 'error')
     }
   } catch (err) {
-    multiError.value = err.response?.data?.detail || '多目录扫描失败，请稍后再试'
+    multiError.value = extractErrorMessage(err)
     addLog(`[错误] 多目录扫描失败: ${multiError.value}`, 'error')
     console.error('Multi scan error:', err)
   } finally {
@@ -1910,7 +1910,7 @@ const performMultiGeneratePlan = async () => {
       addLog(`[错误] 多目录计划生成失败: ${multiError.value}`, 'error')
     }
   } catch (err) {
-    multiError.value = err.response?.data?.detail || '多目录计划生成失败，请稍后再试'
+    multiError.value = extractErrorMessage(err)
     addLog(`[错误] 多目录计划生成失败: ${multiError.value}`, 'error')
     console.error('Multi generate plan error:', err)
   } finally {
