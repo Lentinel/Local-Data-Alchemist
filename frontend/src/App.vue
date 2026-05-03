@@ -87,6 +87,29 @@ const isEditingTemplate = ref(false)
 const editingTemplate = ref(null)
 const editingRule = ref(null)
 
+// 智能批量重命名工具
+const isShowingRenamer = ref(false)
+const isLoadingRenamePreview = ref(false)
+const isExecutingRename = ref(false)
+const renameSelectedFiles = ref([])
+const renameRules = ref([])
+const renamePreviews = ref([])
+const renameConflicts = ref([])
+const renameHasConflicts = ref(false)
+const renameError = ref(null)
+const renameResult = ref(null)
+const activeRenameRuleType = ref('prefix')
+
+const RENAME_RULE_TYPES = [
+  { value: 'prefix', label: '添加前缀', icon: '➕' },
+  { value: 'suffix', label: '添加后缀', icon: '➕' },
+  { value: 'find_replace', label: '查找替换', icon: '🔄' },
+  { value: 'regex', label: '正则替换', icon: '🔍' },
+  { value: 'numbering', label: '批量编号', icon: '🔢' },
+  { value: 'date_prefix', label: '日期前缀', icon: '📅' },
+  { value: 'date_suffix', label: '日期后缀', icon: '📅' },
+]
+
 const categoryTone = {
   logs: 'text-amber-300 bg-amber-500/10 border-amber-400/20',
   images: 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20',
@@ -1225,6 +1248,209 @@ const cancelEditTemplate = () => {
   editingTemplate.value = null
   editingRule.value = null
 }
+
+// 智能批量重命名工具方法
+const showRenamer = () => {
+  if (!files.value || files.value.length === 0) {
+    addLog('[提示] 请先选择目标目录并扫描文件', 'info')
+    return
+  }
+
+  isShowingRenamer.value = true
+  renameSelectedFiles.value = []
+  renameRules.value = []
+  renamePreviews.value = []
+  renameConflicts.value = []
+  renameHasConflicts.value = false
+  renameError.value = null
+  renameResult.value = null
+  activeRenameRuleType.value = 'prefix'
+}
+
+const hideRenamer = () => {
+  isShowingRenamer.value = false
+  renameSelectedFiles.value = []
+  renameRules.value = []
+  renamePreviews.value = []
+  renameConflicts.value = []
+  renameHasConflicts.value = false
+  renameError.value = null
+  renameResult.value = null
+}
+
+const toggleRenameFileSelection = (filePath) => {
+  const index = renameSelectedFiles.value.indexOf(filePath)
+  if (index > -1) {
+    renameSelectedFiles.value.splice(index, 1)
+  } else {
+    renameSelectedFiles.value.push(filePath)
+  }
+}
+
+const selectAllRenameFiles = () => {
+  if (files.value) {
+    renameSelectedFiles.value = files.value.map(f => f.path)
+  }
+}
+
+const clearRenameSelection = () => {
+  renameSelectedFiles.value = []
+  renamePreviews.value = []
+  renameConflicts.value = []
+  renameHasConflicts.value = false
+}
+
+const addRenameRule = () => {
+  const newRule = {
+    rule_type: activeRenameRuleType.value,
+    prefix: '',
+    suffix: '',
+    find_text: '',
+    replace_text: '',
+    regex_pattern: '',
+    regex_replacement: '',
+    start_number: 1,
+    number_padding: 3,
+    number_separator: '_',
+    number_position: 'prefix'
+  }
+  renameRules.value.push(newRule)
+}
+
+const removeRenameRule = (index) => {
+  renameRules.value.splice(index, 1)
+}
+
+const clearRenameRules = () => {
+  renameRules.value = []
+  renamePreviews.value = []
+  renameConflicts.value = []
+  renameHasConflicts.value = false
+}
+
+const generateRenamePreview = async () => {
+  if (!targetPath.value) {
+    renameError.value = '缺少目标目录'
+    return
+  }
+
+  if (renameSelectedFiles.value.length === 0) {
+    renameError.value = '请先选择要重命名的文件'
+    return
+  }
+
+  if (renameRules.value.length === 0) {
+    renameError.value = '请添加至少一条重命名规则'
+    return
+  }
+
+  isLoadingRenamePreview.value = true
+  renameError.value = null
+
+  try {
+    addLog('[系统] 正在生成重命名预览...', 'info')
+
+    const response = await axios.post('/api/rename_preview', {
+      target_path: targetPath.value,
+      selected_files: renameSelectedFiles.value,
+      rules: renameRules.value
+    })
+
+    if (response.data.status === 'success') {
+      renamePreviews.value = response.data.previews || []
+      renameConflicts.value = response.data.conflicts || []
+      renameHasConflicts.value = response.data.has_conflicts || false
+
+      addLog(`[系统] 预览生成完成：${response.data.changed_count} 个文件将被重命名`, 'info')
+      
+      if (renameHasConflicts.value) {
+        addLog(`[警告] 检测到 ${renameConflicts.value.length} 个冲突`, 'warning')
+      }
+    } else {
+      renameError.value = '生成预览失败：服务器返回错误状态'
+      addLog(`[错误] 生成重命名预览失败: ${renameError.value}`, 'error')
+    }
+  } catch (err) {
+    renameError.value = err.response?.data?.detail || '生成重命名预览失败，请稍后再试'
+    addLog(`[错误] 生成重命名预览失败: ${renameError.value}`, 'error')
+    console.error('Generate rename preview error:', err)
+  } finally {
+    isLoadingRenamePreview.value = false
+  }
+}
+
+const executeRename = async () => {
+  if (!targetPath.value) {
+    renameError.value = '缺少目标目录'
+    return
+  }
+
+  if (renamePreviews.value.length === 0) {
+    renameError.value = '请先生成重命名预览'
+    return
+  }
+
+  if (renameHasConflicts.value) {
+    if (!confirm('检测到命名冲突，是否忽略冲突并继续？（冲突的文件将不会被重命名）')) {
+      return
+    }
+  }
+
+  isExecutingRename.value = true
+  renameError.value = null
+
+  try {
+    addLog('[系统] 正在执行批量重命名...', 'info')
+
+    const response = await axios.post('/api/rename_execute', {
+      target_path: targetPath.value,
+      rename_plan: renamePreviews.value
+    })
+
+    if (response.data.status === 'success') {
+      renameResult.value = response.data
+      addLog(`[系统] 重命名完成：成功重命名 ${response.data.executed} 个文件`, 'info')
+
+      hideRenamer()
+
+      if (files.value.length > 0) {
+        const responseList = await axios.post('/api/list_files', {
+          target_path: targetPath.value
+        })
+        if (responseList.data.status === 'success') {
+          files.value = responseList.data.files
+        }
+      }
+    } else {
+      renameError.value = '执行重命名失败：服务器返回错误状态'
+      addLog(`[错误] 执行重命名失败: ${renameError.value}`, 'error')
+    }
+  } catch (err) {
+    renameError.value = err.response?.data?.detail || '执行重命名失败，请稍后再试'
+    addLog(`[错误] 执行重命名失败: ${renameError.value}`, 'error')
+    console.error('Execute rename error:', err)
+  } finally {
+    isExecutingRename.value = false
+  }
+}
+
+const getRenameRuleLabel = (rule) => {
+  const typeInfo = RENAME_RULE_TYPES.find(t => t.value === rule.rule_type)
+  if (!typeInfo) return '未知规则'
+
+  if (rule.rule_type === 'prefix') {
+    return `${typeInfo.label}: "${rule.prefix}"`
+  } else if (rule.rule_type === 'suffix') {
+    return `${typeInfo.label}: "${rule.suffix}"`
+  } else if (rule.rule_type === 'find_replace') {
+    return `${typeInfo.label}: "${rule.find_text}" → "${rule.replace_text}"`
+  } else if (rule.rule_type === 'regex') {
+    return `${typeInfo.label}: ${rule.regex_pattern}`
+  } else if (rule.rule_type === 'numbering') {
+    return `${typeInfo.label}: 从 ${rule.start_number} 开始 (${rule.number_position === 'prefix' ? '前缀' : rule.number_position === 'suffix' ? '后缀' : '替换'})`
+  }
+  return typeInfo.label
+}
 </script>
 
 <template>
@@ -1714,6 +1940,14 @@ const cancelEditTemplate = () => {
             >
               规则模板
             </button>
+            <button
+              type="button"
+              class="rounded-lg border border-sky-400/30 px-4 py-2 text-sky-100 bg-sky-500/10 hover:bg-sky-500/20 transition-colors text-sm"
+              :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
+              @click="showRenamer"
+            >
+              批量重命名
+            </button>
           </div>
         </div>
 
@@ -2190,9 +2424,11 @@ const cancelEditTemplate = () => {
                       ? 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20'
                       : selectedHistory.type === 'deduplicate'
                         ? 'text-amber-300 bg-amber-500/10 border-amber-400/20'
-                        : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
+                        : selectedHistory.type === 'rename'
+                          ? 'text-sky-300 bg-sky-500/10 border-sky-400/20'
+                          : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
                   ]">
-                    {{ selectedHistory.type === 'execute' ? '执行计划' : selectedHistory.type === 'deduplicate' ? '去重操作' : '回滚操作' }}
+                    {{ selectedHistory.type === 'execute' ? '执行计划' : selectedHistory.type === 'deduplicate' ? '去重操作' : selectedHistory.type === 'rename' ? '重命名操作' : '回滚操作' }}
                   </span>
                   <span class="text-xs text-slate-400 font-mono">
                     {{ formatDateTime(selectedHistory.created_at) }}
@@ -2254,9 +2490,11 @@ const cancelEditTemplate = () => {
                         ? 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20'
                         : item.type === 'deduplicate'
                           ? 'text-amber-300 bg-amber-500/10 border-amber-400/20'
-                          : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
+                          : item.type === 'rename'
+                            ? 'text-sky-300 bg-sky-500/10 border-sky-400/20'
+                            : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
                     ]">
-                      {{ item.type === 'execute' ? '执行计划' : item.type === 'deduplicate' ? '去重操作' : '回滚操作' }}
+                      {{ item.type === 'execute' ? '执行计划' : item.type === 'deduplicate' ? '去重操作' : item.type === 'rename' ? '重命名操作' : '回滚操作' }}
                     </span>
                     <span class="text-xs text-slate-400 font-mono">
                       {{ formatDateTime(item.created_at) }}
@@ -2648,6 +2886,418 @@ const cancelEditTemplate = () => {
               type="button"
               class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
               @click="hideTemplates"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 智能批量重命名工具弹窗 -->
+      <div v-if="isShowingRenamer" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div class="relative w-full max-w-7xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
+          <!-- 弹窗头部 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10">
+            <div class="flex items-center gap-3">
+              <Sparkles :size="24" class="text-sky-400" />
+              <div>
+                <p class="font-medium text-slate-100">智能批量重命名工具</p>
+                <p class="text-xs text-slate-400 font-mono">
+                  <template v-if="renamePreviews.length > 0">
+                    已选择 {{ renameSelectedFiles.length }} 个文件 · {{ renamePreviews.filter(p => p.has_change).length }} 个将被重命名
+                    <template v-if="renameHasConflicts">
+                      <span class="text-red-400">· 检测到 {{ renameConflicts.length }} 个冲突</span>
+                    </template>
+                  </template>
+                  <template v-else>
+                    已选择 {{ renameSelectedFiles.length }} 个文件 · {{ renameRules.length }} 条规则
+                  </template>
+                </p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                v-if="renamePreviews.length > 0 && !renameHasConflicts"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors text-emerald-100 text-xs"
+                :disabled="isExecutingRename"
+                @click="executeRename"
+              >
+                执行重命名
+              </button>
+              <button
+                v-if="renameRules.length > 0 && renameSelectedFiles.length > 0"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-sky-400/30 bg-sky-500/10 hover:bg-sky-500/20 transition-colors text-sky-100 text-xs"
+                :disabled="isLoadingRenamePreview"
+                @click="generateRenamePreview"
+              >
+                生成预览
+              </button>
+              <button
+                type="button"
+                class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                @click="hideRenamer"
+                title="关闭"
+              >
+                <X :size="20" class="text-slate-300" />
+              </button>
+            </div>
+          </div>
+
+          <!-- 弹窗内容区域 -->
+          <div class="flex-1 overflow-hidden flex flex-col md:flex-row">
+            <!-- 左侧：文件选择 -->
+            <div class="w-full md:w-1/4 border-b md:border-b-0 md:border-r border-white/10 flex flex-col">
+              <div class="p-3 border-b border-white/10 flex items-center justify-between">
+                <span class="text-sm font-medium text-slate-200">选择文件</span>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    class="px-2 py-1 rounded border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-xs"
+                    @click="selectAllRenameFiles"
+                  >
+                    全选
+                  </button>
+                  <button
+                    type="button"
+                    class="px-2 py-1 rounded border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-xs"
+                    @click="clearRenameSelection"
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
+              <div class="flex-1 overflow-auto p-2">
+                <div v-if="!files || files.length === 0" class="flex flex-col items-center justify-center h-32 text-slate-500 text-sm">
+                  <p>暂无文件</p>
+                  <p class="text-xs mt-1">请先扫描目标目录</p>
+                </div>
+                <div v-else class="space-y-1">
+                  <div
+                    v-for="file in files"
+                    :key="file.path"
+                    class="flex items-center gap-2 p-2 rounded-lg cursor-pointer transition-colors"
+                    :class="[
+                      renameSelectedFiles.includes(file.path)
+                        ? 'bg-sky-500/10 border border-sky-400/30'
+                        : 'bg-slate-900/50 border border-white/5 hover:bg-slate-800/50'
+                    ]"
+                    @click="toggleRenameFileSelection(file.path)"
+                  >
+                    <div class="flex items-center justify-center w-5 h-5 rounded border"
+                      :class="[
+                        renameSelectedFiles.includes(file.path)
+                          ? 'border-sky-400 bg-sky-500/20'
+                          : 'border-slate-600'
+                      ]"
+                    >
+                      <CheckCircle
+                        v-if="renameSelectedFiles.includes(file.path)"
+                        :size="12"
+                        class="text-sky-400"
+                      />
+                    </div>
+                    <div class="p-1.5 rounded bg-slate-800 text-slate-400">
+                      <FileText :size="16" />
+                    </div>
+                    <div class="flex-1 min-w-0">
+                      <p class="text-sm text-slate-200 truncate">{{ file.name }}</p>
+                      <p class="text-xs text-slate-500 font-mono truncate">
+                        {{ file.extension || 'UNKNOWN' }} · {{ formatBytes(file.size) }}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 中间：规则配置 -->
+            <div class="w-full md:w-1/3 border-b md:border-b-0 md:border-r border-white/10 flex flex-col">
+              <div class="p-3 border-b border-white/10 flex items-center justify-between">
+                <span class="text-sm font-medium text-slate-200">重命名规则</span>
+                <div class="flex items-center gap-2">
+                  <button
+                    type="button"
+                    class="px-2 py-1 rounded border border-sky-400/30 bg-sky-500/10 hover:bg-sky-500/20 transition-colors text-sky-200 text-xs"
+                    @click="addRenameRule"
+                  >
+                    + 添加规则
+                  </button>
+                  <button
+                    v-if="renameRules.length > 0"
+                    type="button"
+                    class="px-2 py-1 rounded border border-red-400/20 bg-red-500/5 hover:bg-red-500/10 transition-colors text-red-300 text-xs"
+                    @click="clearRenameRules"
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
+
+              <!-- 规则类型选择 -->
+              <div class="p-3 border-b border-white/10">
+                <p class="text-xs text-slate-400 mb-2">选择规则类型</p>
+                <div class="flex flex-wrap gap-1.5">
+                  <button
+                    v-for="ruleType in RENAME_RULE_TYPES"
+                    :key="ruleType.value"
+                    type="button"
+                    class="px-2 py-1 rounded border text-xs transition-colors"
+                    :class="[
+                      activeRenameRuleType === ruleType.value
+                        ? 'border-sky-400/30 bg-sky-500/10 text-sky-200'
+                        : 'border-slate-400/20 bg-white/5 text-slate-300 hover:bg-white/10'
+                    ]"
+                    @click="activeRenameRuleType = ruleType.value"
+                  >
+                    {{ ruleType.icon }} {{ ruleType.label }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- 已添加的规则列表 -->
+              <div class="flex-1 overflow-auto p-3">
+                <div v-if="renameRules.length === 0" class="flex flex-col items-center justify-center h-32 text-slate-500 text-sm">
+                  <p>暂无规则</p>
+                  <p class="text-xs mt-1">选择规则类型后点击"添加规则"</p>
+                </div>
+                <div v-else class="space-y-2">
+                  <div
+                    v-for="(rule, index) in renameRules"
+                    :key="index"
+                    class="p-3 rounded-lg bg-slate-950/70 border border-white/10 space-y-2"
+                  >
+                    <div class="flex items-center justify-between">
+                      <span class="text-xs font-medium text-slate-200">
+                        规则 {{ index + 1 }}: {{ getRenameRuleLabel(rule) }}
+                      </span>
+                      <button
+                        type="button"
+                        class="p-1 rounded hover:bg-red-500/10 text-red-400 opacity-60 hover:opacity-100"
+                        @click="removeRenameRule(index)"
+                      >
+                        <X :size="14" />
+                      </button>
+                    </div>
+
+                    <!-- 规则配置表单 -->
+                    <div v-if="rule.rule_type === 'prefix'" class="space-y-2">
+                      <label class="text-xs text-slate-400">前缀内容</label>
+                      <input
+                        type="text"
+                        v-model="rule.prefix"
+                        class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                        placeholder="例如: IMG_ 或 2024_"
+                      >
+                    </div>
+
+                    <div v-else-if="rule.rule_type === 'suffix'" class="space-y-2">
+                      <label class="text-xs text-slate-400">后缀内容 (不含扩展名)</label>
+                      <input
+                        type="text"
+                        v-model="rule.suffix"
+                        class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                        placeholder="例如: _backup 或 _processed"
+                      >
+                    </div>
+
+                    <div v-else-if="rule.rule_type === 'find_replace'" class="space-y-2">
+                      <label class="text-xs text-slate-400">查找文本</label>
+                      <input
+                        type="text"
+                        v-model="rule.find_text"
+                        class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                        placeholder="要查找的文本"
+                      >
+                      <label class="text-xs text-slate-400">替换为</label>
+                      <input
+                        type="text"
+                        v-model="rule.replace_text"
+                        class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                        placeholder="替换为的文本 (留空则删除)"
+                      >
+                    </div>
+
+                    <div v-else-if="rule.rule_type === 'regex'" class="space-y-2">
+                      <label class="text-xs text-slate-400">正则表达式</label>
+                      <input
+                        type="text"
+                        v-model="rule.regex_pattern"
+                        class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                        placeholder="例如: (\d+) 或 (\w+)"
+                      >
+                      <label class="text-xs text-slate-400">替换模板</label>
+                      <input
+                        type="text"
+                        v-model="rule.regex_replacement"
+                        class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                        placeholder="例如: img_$1"
+                      >
+                    </div>
+
+                    <div v-else-if="rule.rule_type === 'numbering'" class="space-y-2">
+                      <div class="grid grid-cols-2 gap-2">
+                        <div>
+                          <label class="text-xs text-slate-400">起始编号</label>
+                          <input
+                            type="number"
+                            v-model.number="rule.start_number"
+                            :min="0"
+                            class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                          >
+                        </div>
+                        <div>
+                          <label class="text-xs text-slate-400">补零位数</label>
+                          <input
+                            type="number"
+                            v-model.number="rule.number_padding"
+                            :min="1"
+                            :max="10"
+                            class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                          >
+                        </div>
+                      </div>
+                      <div class="grid grid-cols-2 gap-2">
+                        <div>
+                          <label class="text-xs text-slate-400">分隔符</label>
+                          <input
+                            type="text"
+                            v-model="rule.number_separator"
+                            class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                            placeholder="例如: _ 或 -"
+                          >
+                        </div>
+                        <div>
+                          <label class="text-xs text-slate-400">位置</label>
+                          <select
+                            v-model="rule.number_position"
+                            class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                          >
+                            <option value="prefix">前缀</option>
+                            <option value="suffix">后缀</option>
+                            <option value="replace">替换</option>
+                          </select>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div v-else-if="rule.rule_type === 'date_prefix' || rule.rule_type === 'date_suffix'" class="space-y-2">
+                      <label class="text-xs text-slate-400">日期分隔符</label>
+                      <input
+                        type="text"
+                        v-model="rule.number_separator"
+                        class="w-full rounded-lg border border-white/10 bg-slate-950/80 px-3 py-2 text-sm text-slate-200 outline-none focus:border-sky-400 font-mono"
+                        placeholder="例如: _ 或 -"
+                      >
+                      <p class="text-xs text-slate-500">
+                        日期格式: YYYY-MM-DD (如 {{ new Date().toISOString().split('T')[0] }})
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右侧：预览对比 -->
+            <div class="w-full md:w-5/12 flex flex-col">
+              <div class="p-3 border-b border-white/10">
+                <span class="text-sm font-medium text-slate-200">预览对比</span>
+              </div>
+              <div class="flex-1 overflow-auto p-3">
+                <!-- 错误显示 -->
+                <div v-if="renameError" class="flex items-center gap-3 p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 mb-3">
+                  <AlertCircle :size="16" />
+                  <p class="text-sm">{{ renameError }}</p>
+                </div>
+
+                <!-- 加载中 -->
+                <div v-if="isLoadingRenamePreview" class="flex items-center justify-center h-32">
+                  <div class="flex items-center gap-3 text-slate-400">
+                    <Loader2 :size="20" class="animate-spin" />
+                    <p class="text-sm">正在生成预览...</p>
+                  </div>
+                </div>
+
+                <!-- 无预览状态 -->
+                <div v-else-if="renamePreviews.length === 0" class="flex flex-col items-center justify-center h-32 text-slate-500 text-sm">
+                  <Sparkles :size="32" class="mb-2 text-slate-600" />
+                  <p>选择文件并添加规则后</p>
+                  <p>点击"生成预览"查看重命名效果</p>
+                </div>
+
+                <!-- 预览列表 -->
+                <div v-else class="space-y-2">
+                  <div
+                    v-for="preview in renamePreviews"
+                    :key="preview.original_path"
+                    class="p-3 rounded-lg bg-slate-950/70 border transition-colors"
+                    :class="[
+                      preview.conflict
+                        ? 'border-red-500/30'
+                        : preview.has_change
+                          ? 'border-sky-400/30'
+                          : 'border-white/10'
+                    ]"
+                  >
+                    <div class="flex items-center gap-2 mb-1">
+                      <div class="p-1.5 rounded bg-slate-800 text-slate-400">
+                        <FileText :size="14" />
+                      </div>
+                      <div class="flex-1">
+                        <div class="flex items-center gap-2">
+                          <p class="text-sm text-slate-400 line-through">{{ preview.original_name }}</p>
+                          <span v-if="preview.has_change" class="text-sky-400">→</span>
+                          <p v-if="preview.has_change" class="text-sm text-sky-200 font-medium">{{ preview.new_name }}</p>
+                        </div>
+                        <p class="text-xs text-slate-500 font-mono truncate">{{ preview.original_path }}</p>
+                      </div>
+                      <div class="flex items-center gap-1">
+                        <span
+                          v-if="preview.conflict"
+                          class="px-2 py-0.5 rounded text-xs font-medium text-red-300 bg-red-500/10 border border-red-400/20"
+                        >
+                          冲突
+                        </span>
+                        <span
+                          v-else-if="preview.has_change"
+                          class="px-2 py-0.5 rounded text-xs font-medium text-sky-300 bg-sky-500/10 border border-sky-400/20"
+                        >
+                          变更
+                        </span>
+                        <span
+                          v-else
+                          class="px-2 py-0.5 rounded text-xs font-medium text-slate-400 bg-slate-500/10 border border-slate-400/20"
+                        >
+                          无变化
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 弹窗底部 -->
+          <div class="p-4 border-t border-white/10 flex items-center justify-between">
+            <div class="text-xs text-slate-500 font-mono">
+              <template v-if="renamePreviews.length > 0">
+                <template v-if="renameHasConflicts">
+                  <span class="text-red-400">警告：存在冲突，冲突的文件将不会被重命名</span>
+                </template>
+                <template v-else>
+                  预览就绪，点击"执行重命名"开始操作 · 操作可通过"时光倒流"回滚
+                </template>
+              </template>
+              <template v-else>
+                提示：规则按顺序应用，先添加的规则先执行
+              </template>
+            </div>
+            <button
+              type="button"
+              class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+              @click="hideRenamer"
             >
               关闭
             </button>
