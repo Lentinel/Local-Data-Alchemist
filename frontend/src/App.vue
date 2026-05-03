@@ -99,10 +99,54 @@ const renameSelectedFiles = ref([])
 const renameRules = ref([])
 const renamePreviews = ref([])
 const renameConflicts = ref([])
+const renameWarnings = ref([])
 const renameHasConflicts = ref(false)
+const renameHasWarnings = ref(false)
 const renameError = ref(null)
 const renameResult = ref(null)
 const activeRenameRuleType = ref('prefix')
+
+const WINDOWS_INVALID_CHARS = ['\\', '/', ':', '*', '?', '"', '<', '>', '|']
+const WINDOWS_RESERVED_NAMES = [
+  'CON', 'PRN', 'AUX', 'NUL',
+  'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+  'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+]
+const MAX_FILENAME_LENGTH = 255
+
+const validateFilename = (filename) => {
+  if (!filename || !filename.trim()) {
+    return { valid: false, reason: '文件名为空' }
+  }
+  
+  for (const char of WINDOWS_INVALID_CHARS) {
+    if (filename.includes(char)) {
+      return { valid: false, reason: `包含非法字符: ${char}` }
+    }
+  }
+  
+  const nameWithoutExt = filename.substring(0, filename.lastIndexOf('.') || filename.length).toUpperCase()
+  for (const reserved of WINDOWS_RESERVED_NAMES) {
+    if (nameWithoutExt === reserved || nameWithoutExt.startsWith(reserved + '.')) {
+      return { valid: false, reason: `包含 Windows 保留名称: ${reserved}` }
+    }
+  }
+  
+  if (filename.endsWith('.') || filename.endsWith(' ')) {
+    return { valid: false, reason: '文件名不能以点或空格结尾' }
+  }
+  
+  if (filename.length > MAX_FILENAME_LENGTH) {
+    return { valid: false, reason: `文件名过长 (${filename.length} > ${MAX_FILENAME_LENGTH})` }
+  }
+  
+  const stem = filename.substring(0, filename.lastIndexOf('.') || filename.length)
+  if (!stem.trim()) {
+    return { valid: false, reason: '文件名主体部分为空' }
+  }
+  
+  return { valid: true, reason: null }
+}
 
 const RENAME_RULE_TYPES = [
   { value: 'prefix', label: '添加前缀', icon: '➕' },
@@ -1645,7 +1689,9 @@ const clearRenameSelection = () => {
   renameSelectedFiles.value = []
   renamePreviews.value = []
   renameConflicts.value = []
+  renameWarnings.value = []
   renameHasConflicts.value = false
+  renameHasWarnings.value = false
 }
 
 const addRenameRule = () => {
@@ -1673,7 +1719,9 @@ const clearRenameRules = () => {
   renameRules.value = []
   renamePreviews.value = []
   renameConflicts.value = []
+  renameWarnings.value = []
   renameHasConflicts.value = false
+  renameHasWarnings.value = false
 }
 
 const generateRenamePreview = async () => {
@@ -1707,12 +1755,17 @@ const generateRenamePreview = async () => {
     if (response.data.status === 'success') {
       renamePreviews.value = response.data.previews || []
       renameConflicts.value = response.data.conflicts || []
+      renameWarnings.value = response.data.warnings || []
       renameHasConflicts.value = response.data.has_conflicts || false
+      renameHasWarnings.value = response.data.has_warnings || false
 
       addLog(`[系统] 预览生成完成：${response.data.changed_count} 个文件将被重命名`, 'info')
       
       if (renameHasConflicts.value) {
         addLog(`[警告] 检测到 ${renameConflicts.value.length} 个冲突`, 'warning')
+      }
+      if (renameHasWarnings.value) {
+        addLog(`[提示] 检测到 ${renameWarnings.value.length} 个警告（已自动修正）`, 'warning')
       }
     } else {
       renameError.value = '生成预览失败：服务器返回错误状态'
@@ -1758,6 +1811,10 @@ const executeRename = async () => {
     if (response.data.status === 'success') {
       renameResult.value = response.data
       addLog(`[系统] 重命名完成：成功重命名 ${response.data.executed} 个文件`, 'info')
+
+      if (response.data.has_errors) {
+        addLog(`[警告] 执行过程中出现 ${response.data.errors?.length || 0} 个错误`, 'warning')
+      }
 
       hideRenamer()
 
@@ -3724,6 +3781,9 @@ const getHistoryTypeLabels = (type) => {
                     <template v-if="renameHasConflicts">
                       <span class="text-red-400">· 检测到 {{ renameConflicts.length }} 个冲突</span>
                     </template>
+                    <template v-if="renameHasWarnings">
+                      <span class="text-amber-400">· {{ renameWarnings.length }} 个警告（已自动修正）</span>
+                    </template>
                   </template>
                   <template v-else>
                     已选择 {{ renameSelectedFiles.length }} 个文件 · {{ renameRules.length }} 条规则
@@ -4051,9 +4111,11 @@ const getHistoryTypeLabels = (type) => {
                     :class="[
                       preview.conflict
                         ? 'border-red-500/30'
-                        : preview.has_change
-                          ? 'border-sky-400/30'
-                          : 'border-white/10'
+                        : preview.sanitized
+                          ? 'border-amber-400/30'
+                          : preview.has_change
+                            ? 'border-sky-400/30'
+                            : 'border-white/10'
                     ]"
                   >
                     <div class="flex items-center gap-2 mb-1">
@@ -4064,9 +4126,15 @@ const getHistoryTypeLabels = (type) => {
                         <div class="flex items-center gap-2">
                           <p class="text-sm text-slate-400 line-through">{{ preview.original_name }}</p>
                           <span v-if="preview.has_change" class="text-sky-400">→</span>
-                          <p v-if="preview.has_change" class="text-sm text-sky-200 font-medium">{{ preview.new_name }}</p>
+                          <p v-if="preview.has_change" class="text-sm font-medium"
+                            :class="preview.sanitized ? 'text-amber-300' : 'text-sky-200'">
+                            {{ preview.new_name }}
+                          </p>
                         </div>
                         <p class="text-xs text-slate-500 font-mono truncate">{{ preview.original_path }}</p>
+                        <p v-if="preview.validation_warning" class="text-xs text-amber-400 mt-1">
+                          ⚠️ {{ preview.validation_warning }}
+                        </p>
                       </div>
                       <div class="flex items-center gap-1">
                         <span
@@ -4074,6 +4142,12 @@ const getHistoryTypeLabels = (type) => {
                           class="px-2 py-0.5 rounded text-xs font-medium text-red-300 bg-red-500/10 border border-red-400/20"
                         >
                           冲突
+                        </span>
+                        <span
+                          v-else-if="preview.sanitized"
+                          class="px-2 py-0.5 rounded text-xs font-medium text-amber-300 bg-amber-500/10 border border-amber-400/20"
+                        >
+                          已修正
                         </span>
                         <span
                           v-else-if="preview.has_change"
@@ -4096,27 +4170,41 @@ const getHistoryTypeLabels = (type) => {
           </div>
 
           <!-- 弹窗底部 -->
-          <div class="p-4 border-t border-white/10 flex items-center justify-between">
-            <div class="text-xs text-slate-500 font-mono">
-              <template v-if="renamePreviews.length > 0">
-                <template v-if="renameHasConflicts">
-                  <span class="text-red-400">警告：存在冲突，冲突的文件将不会被重命名</span>
+          <div class="p-4 border-t border-white/10 flex flex-col gap-2">
+            <div class="flex items-center justify-between">
+              <div class="text-xs text-slate-500 font-mono">
+                <template v-if="renamePreviews.length > 0">
+                  <template v-if="renameHasConflicts">
+                    <span class="text-red-400">警告：存在冲突，冲突的文件将不会被重命名</span>
+                  </template>
+                  <template v-else-if="renameHasWarnings">
+                    <span class="text-amber-400">提示：存在 {{ renameWarnings.length }} 个非法文件名已自动修正</span>
+                  </template>
+                  <template v-else>
+                    预览就绪，点击"执行重命名"开始操作 · 操作可通过"时光倒流"回滚
+                  </template>
                 </template>
                 <template v-else>
-                  预览就绪，点击"执行重命名"开始操作 · 操作可通过"时光倒流"回滚
+                  提示：规则按顺序应用，先添加的规则先执行
                 </template>
-              </template>
-              <template v-else>
-                提示：规则按顺序应用，先添加的规则先执行
-              </template>
+              </div>
+              <button
+                type="button"
+                class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+                @click="hideRenamer"
+              >
+                关闭
+              </button>
             </div>
-            <button
-              type="button"
-              class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
-              @click="hideRenamer"
-            >
-              关闭
-            </button>
+            <div class="flex items-start gap-2 p-2 rounded-lg bg-slate-950/50 border border-slate-700/50">
+              <AlertCircle :size="14" class="text-sky-400 mt-0.5 flex-shrink-0" />
+              <div class="text-xs text-slate-400">
+                <span class="font-medium text-slate-300">Windows 文件名限制：</span>
+                不能包含字符 <code class="px-1 rounded bg-slate-800 text-amber-300">\ / : * ? " &lt; &gt; |</code>，
+                不能使用保留名称 <code class="px-1 rounded bg-slate-800 text-amber-300">CON, PRN, AUX, NUL, COM1-9, LPT1-9</code>，
+                不能以点或空格结尾，长度不能超过 255 字符。
+              </div>
+            </div>
           </div>
         </div>
       </div>
