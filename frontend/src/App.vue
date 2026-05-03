@@ -149,6 +149,22 @@ const taskCurrentFile = ref('')
 const isTaskRunning = ref(false)
 let taskPollingInterval = null
 
+// 详细进度统计
+const taskStats = ref({
+  move_total: 0,
+  move_done: 0,
+  delete_total: 0,
+  delete_done: 0,
+  rename_total: 0,
+  rename_done: 0,
+  keep_total: 0,
+  keep_done: 0,
+})
+const taskCompletedItems = ref([])
+const taskEta = ref('计算中...')
+const taskSpeed = ref(0)
+const taskFormattedEta = ref('计算中...')
+
 const clearTaskPolling = () => {
   if (taskPollingInterval) {
     clearInterval(taskPollingInterval)
@@ -171,6 +187,20 @@ const pollTaskStatus = async () => {
     taskTotal.value = data.total
     taskMessage.value = data.message
     taskCurrentFile.value = data.current_file
+    
+    taskStats.value = {
+      move_total: data.move_total || 0,
+      move_done: data.move_done || 0,
+      delete_total: data.delete_total || 0,
+      delete_done: data.delete_done || 0,
+      rename_total: data.rename_total || 0,
+      rename_done: data.rename_done || 0,
+      keep_total: data.keep_total || 0,
+      keep_done: data.keep_done || 0,
+    }
+    taskCompletedItems.value = data.completed_items || []
+    taskSpeed.value = data.items_per_second || 0
+    taskFormattedEta.value = data.formatted_eta || '计算中...'
 
     if (data.status === 'completed') {
       clearTaskPolling()
@@ -222,6 +252,31 @@ const cancelCurrentTask = async () => {
     addLog('[系统] 正在取消任务...', 'info')
   } catch (err) {
     addLog(`[错误] 取消任务失败: ${extractErrorMessage(err)}`, 'error')
+  }
+}
+
+const getTaskPercentage = () => {
+  if (taskTotal.value === 0) return 0
+  return Math.min(100, Math.round((taskProgress.value / taskTotal.value) * 100))
+}
+
+const getActionLabel = (action) => {
+  switch (action) {
+    case 'move': return '移动'
+    case 'rename_and_move': return '重命名'
+    case 'delete': return '删除'
+    case 'keep': return '保留'
+    default: return action
+  }
+}
+
+const getActionColor = (action) => {
+  switch (action) {
+    case 'move': return '#3b82f6'
+    case 'rename_and_move': return '#8b5cf6'
+    case 'delete': return '#ef4444'
+    case 'keep': return '#10b981'
+    default: return '#64748b'
   }
 }
 
@@ -2415,34 +2470,175 @@ const getHistoryTypeLabels = (type) => {
             <span v-else>批准并执行炼金</span>
           </button>
 
-          <div v-if="isTaskRunning && taskTotal > 0" class="p-4 rounded-lg border border-sky-400/20 bg-sky-500/10 space-y-3">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-2">
-                <Loader2 :size="18" class="animate-spin text-sky-400" />
-                <span class="text-sm font-medium text-sky-200">{{ taskMessage }}</span>
+          <div v-if="isTaskRunning && taskTotal > 0" class="space-y-4">
+            <div class="p-5 rounded-xl border border-sky-400/20 bg-gradient-to-br from-sky-500/10 to-cyan-500/5">
+              <div class="flex flex-col md:flex-row items-start md:items-center gap-6">
+                <div class="relative w-28 h-28 flex-shrink-0">
+                  <svg class="w-28 h-28 transform -rotate-90" viewBox="0 0 120 120">
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="52"
+                      fill="none"
+                      stroke="#1e293b"
+                      stroke-width="12"
+                    />
+                    <circle
+                      cx="60"
+                      cy="60"
+                      r="52"
+                      fill="none"
+                      stroke="url(#progressGradient)"
+                      stroke-width="12"
+                      stroke-linecap="round"
+                      :stroke-dasharray="326.73"
+                      :stroke-dashoffset="326.73 - (326.73 * getTaskPercentage() / 100)"
+                      class="transition-all duration-500"
+                    />
+                    <defs>
+                      <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+                        <stop offset="0%" stop-color="#0ea5e9" />
+                        <stop offset="100%" stop-color="#22d3ee" />
+                      </linearGradient>
+                    </defs>
+                  </svg>
+                  <div class="absolute inset-0 flex flex-col items-center justify-center">
+                    <span class="text-2xl font-black text-sky-400">{{ getTaskPercentage() }}%</span>
+                    <span class="text-xs text-slate-400 mt-1">{{ taskProgress }}/{{ taskTotal }}</span>
+                  </div>
+                </div>
+
+                <div class="flex-1 w-full space-y-3">
+                  <div class="flex items-center gap-2">
+                    <Loader2 :size="20" class="animate-spin text-sky-400" />
+                    <span class="text-base font-semibold text-sky-200">{{ taskMessage }}</span>
+                  </div>
+
+                  <div class="w-full h-3 bg-slate-800/80 rounded-full overflow-hidden">
+                    <div
+                      class="h-full bg-gradient-to-r from-sky-500 via-cyan-400 to-teal-400 rounded-full transition-all duration-300 relative overflow-hidden"
+                      :style="{ width: `${getTaskPercentage()}%` }"
+                    >
+                      <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent animate-pulse"></div>
+                    </div>
+                  </div>
+
+                  <div v-if="taskCurrentFile" class="flex items-center gap-2">
+                    <FileText :size="16" class="text-sky-400 flex-shrink-0" />
+                    <span class="text-sm text-slate-300 font-mono truncate max-w-md">{{ taskCurrentFile }}</span>
+                  </div>
+
+                  <div class="flex items-center gap-4 text-xs">
+                    <div v-if="taskSpeed > 0" class="flex items-center gap-1.5 text-slate-400">
+                      <span class="text-slate-500">⚡ 速度:</span>
+                      <span class="text-sky-300 font-medium">{{ taskSpeed.toFixed(1) }} 个/秒</span>
+                    </div>
+                    <div class="flex items-center gap-1.5 text-slate-400">
+                      <span class="text-slate-500">⏱ 剩余:</span>
+                      <span class="text-cyan-300 font-medium">{{ taskFormattedEta }}</span>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <span class="text-xs text-sky-300 font-mono">
-                {{ taskProgress }} / {{ taskTotal }} ({{ taskTotal > 0 ? Math.round((taskProgress / taskTotal) * 100) : 0 }}%)
-              </span>
             </div>
 
-            <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div
-                class="h-full bg-gradient-to-r from-sky-500 to-cyan-400 rounded-full transition-all duration-300"
-                :style="{ width: `${taskTotal > 0 ? (taskProgress / taskTotal) * 100 : 0}%` }"
-              ></div>
+                v-if="taskStats.move_total > 0"
+                class="p-3 rounded-lg border border-blue-500/20 bg-blue-500/5 space-y-2"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-slate-400">📂 移动文件</span>
+                  <span class="text-xs font-mono text-blue-400">{{ taskStats.move_done }}/{{ taskStats.move_total }}</span>
+                </div>
+                <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    class="h-full bg-blue-500 rounded-full transition-all duration-300"
+                    :style="{ width: taskStats.move_total > 0 ? `${(taskStats.move_done / taskStats.move_total) * 100}%` : '0%' }"
+                  ></div>
+                </div>
+              </div>
+
+              <div
+                v-if="taskStats.rename_total > 0"
+                class="p-3 rounded-lg border border-purple-500/20 bg-purple-500/5 space-y-2"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-slate-400">✏️ 重命名</span>
+                  <span class="text-xs font-mono text-purple-400">{{ taskStats.rename_done }}/{{ taskStats.rename_total }}</span>
+                </div>
+                <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    class="h-full bg-purple-500 rounded-full transition-all duration-300"
+                    :style="{ width: taskStats.rename_total > 0 ? `${(taskStats.rename_done / taskStats.rename_total) * 100}%` : '0%' }"
+                  ></div>
+                </div>
+              </div>
+
+              <div
+                v-if="taskStats.delete_total > 0"
+                class="p-3 rounded-lg border border-red-500/20 bg-red-500/5 space-y-2"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-slate-400">🗑️ 删除</span>
+                  <span class="text-xs font-mono text-red-400">{{ taskStats.delete_done }}/{{ taskStats.delete_total }}</span>
+                </div>
+                <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    class="h-full bg-red-500 rounded-full transition-all duration-300"
+                    :style="{ width: taskStats.delete_total > 0 ? `${(taskStats.delete_done / taskStats.delete_total) * 100}%` : '0%' }"
+                  ></div>
+                </div>
+              </div>
+
+              <div
+                v-if="taskStats.keep_total > 0"
+                class="p-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 space-y-2"
+              >
+                <div class="flex items-center justify-between">
+                  <span class="text-xs text-slate-400">✅ 保留</span>
+                  <span class="text-xs font-mono text-emerald-400">{{ taskStats.keep_done }}/{{ taskStats.keep_total }}</span>
+                </div>
+                <div class="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                  <div
+                    class="h-full bg-emerald-500 rounded-full transition-all duration-300"
+                    :style="{ width: taskStats.keep_total > 0 ? `${(taskStats.keep_done / taskStats.keep_total) * 100}%` : '0%' }"
+                  ></div>
+                </div>
+              </div>
             </div>
 
-            <div v-if="taskCurrentFile" class="flex items-center gap-2 text-xs">
-              <FileText :size="14" class="text-sky-400" />
-              <span class="text-sky-200 font-mono truncate">{{ taskCurrentFile }}</span>
+            <div v-if="taskCompletedItems.length > 0" class="p-4 rounded-lg border border-slate-600/30 bg-slate-900/50">
+              <div class="flex items-center justify-between mb-3">
+                <span class="text-sm font-medium text-slate-300">📋 已完成操作 ({{ taskCompletedItems.length }})</span>
+              </div>
+              <div class="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                <div
+                  v-for="(item, index) in taskCompletedItems.slice(-8)"
+                  :key="index"
+                  class="flex items-center gap-2 text-xs p-2 rounded bg-slate-800/50"
+                >
+                  <CheckCircle :size="14" class="text-emerald-400 flex-shrink-0" />
+                  <span
+                    class="px-1.5 py-0.5 rounded text-xs font-medium flex-shrink-0"
+                    :style="{ backgroundColor: getActionColor(item.action) + '20', color: getActionColor(item.action) }"
+                  >
+                    {{ getActionLabel(item.action) }}
+                  </span>
+                  <span class="text-slate-400 truncate flex-1 font-mono">{{ item.file }}</span>
+                  <span v-if="item.new_path && item.new_path !== item.file" class="text-slate-500 hidden md:inline">
+                    → {{ item.new_path }}
+                  </span>
+                </div>
+              </div>
             </div>
 
             <button
               type="button"
-              class="w-full mt-2 px-4 py-2 rounded-lg border border-red-400/30 text-red-300 bg-red-500/10 hover:bg-red-500/20 transition-colors text-sm font-medium"
+              class="w-full px-6 py-3 rounded-lg border border-red-400/30 text-red-300 bg-red-500/10 hover:bg-red-500/20 transition-all text-sm font-medium flex items-center justify-center gap-2"
               @click="cancelCurrentTask"
             >
+              <X :size="18" />
               取消任务
             </button>
           </div>

@@ -470,6 +470,19 @@ class TaskProgress(BaseModel):
     end_time: Optional[str] = Field(default=None, description="结束时间")
     error: Optional[str] = Field(default=None, description="错误信息")
     result: Optional[dict] = Field(default=None, description="执行结果")
+    
+    move_total: int = Field(default=0, ge=0, description="移动操作总数")
+    move_done: int = Field(default=0, ge=0, description="已完成移动操作数")
+    delete_total: int = Field(default=0, ge=0, description="删除操作总数")
+    delete_done: int = Field(default=0, ge=0, description="已完成删除操作数")
+    rename_total: int = Field(default=0, ge=0, description="重命名操作总数")
+    rename_done: int = Field(default=0, ge=0, description="已完成重命名操作数")
+    keep_total: int = Field(default=0, ge=0, description="保留操作总数")
+    keep_done: int = Field(default=0, ge=0, description="已完成保留操作数")
+    
+    completed_items: list[dict] = Field(default_factory=list, description="已完成的操作列表")
+    eta_seconds: Optional[float] = Field(default=None, description="估计剩余秒数")
+    items_per_second: Optional[float] = Field(default=None, description="每秒处理速度")
 
     @property
     def percentage(self) -> float:
@@ -488,6 +501,20 @@ class TaskStatusResponse(BaseModel):
     current_file: str
     error: Optional[str]
     result: Optional[dict]
+    
+    move_total: int
+    move_done: int
+    delete_total: int
+    delete_done: int
+    rename_total: int
+    rename_done: int
+    keep_total: int
+    keep_done: int
+    
+    completed_items: list[dict]
+    eta_seconds: Optional[float]
+    items_per_second: Optional[float]
+    formatted_eta: Optional[str]
 
 
 class CancelTaskRequest(BaseModel):
@@ -518,8 +545,45 @@ _task_lock = threading.Lock()
 _task_cancellation_flags: dict[str, bool] = {}
 
 
-def create_task(task_type: TaskType, total: int = 0) -> str:
+def format_eta(seconds: float) -> str:
+    if seconds is None or seconds < 0:
+        return "计算中..."
+    if seconds < 60:
+        return f"约 {int(seconds)} 秒"
+    elif seconds < 3600:
+        minutes = int(seconds / 60)
+        secs = int(seconds % 60)
+        return f"约 {minutes} 分 {secs} 秒"
+    else:
+        hours = int(seconds / 3600)
+        minutes = int((seconds % 3600) / 60)
+        return f"约 {hours} 小时 {minutes} 分"
+
+
+def create_task(
+    task_type: TaskType, 
+    total: int = 0,
+    plan: list | None = None,
+) -> str:
     task_id = f"task-{uuid.uuid4().hex[:12]}"
+    
+    move_total = 0
+    delete_total = 0
+    rename_total = 0
+    keep_total = 0
+    
+    if plan:
+        for item in plan:
+            action = getattr(item, "action", None) or (item.get("action") if isinstance(item, dict) else None)
+            if action == "move":
+                move_total += 1
+            elif action == "delete":
+                delete_total += 1
+            elif action == "rename_and_move":
+                rename_total += 1
+            elif action == "keep":
+                keep_total += 1
+    
     with _task_lock:
         _task_store[task_id] = TaskProgress(
             task_id=task_id,
@@ -533,6 +597,17 @@ def create_task(task_type: TaskType, total: int = 0) -> str:
             end_time=None,
             error=None,
             result=None,
+            move_total=move_total,
+            move_done=0,
+            delete_total=delete_total,
+            delete_done=0,
+            rename_total=rename_total,
+            rename_done=0,
+            keep_total=keep_total,
+            keep_done=0,
+            completed_items=[],
+            eta_seconds=None,
+            items_per_second=None,
         )
         _task_cancellation_flags[task_id] = False
     return task_id
@@ -551,13 +626,36 @@ def update_task_progress(
     status: TaskStatus | None = None,
     error: str | None = None,
     result: dict | None = None,
+    move_done: int | None = None,
+    delete_done: int | None = None,
+    rename_done: int | None = None,
+    keep_done: int | None = None,
+    completed_item: dict | None = None,
 ):
     with _task_lock:
         task = _task_store.get(task_id)
         if not task:
             return
+        
         if current is not None:
             task.current = current
+            
+            if task.current > 0 and task.start_time:
+                try:
+                    start_dt = datetime.fromisoformat(task.start_time)
+                    elapsed = (datetime.now() - start_dt).total_seconds()
+                    if elapsed > 0:
+                        task.items_per_second = task.current / elapsed
+                        remaining = task.total - task.current
+                        if task.items_per_second > 0:
+                            task.eta_seconds = remaining / task.items_per_second
+                        else:
+                            task.eta_seconds = None
+                    else:
+                        task.eta_seconds = None
+                except (ValueError, TypeError):
+                    task.eta_seconds = None
+        
         if message is not None:
             task.message = message
         if current_file is not None:
@@ -566,10 +664,25 @@ def update_task_progress(
             task.status = status
             if status in {"completed", "cancelled", "failed"}:
                 task.end_time = datetime.now().isoformat()
+                task.eta_seconds = 0
         if error is not None:
             task.error = error
         if result is not None:
             task.result = result
+        
+        if move_done is not None:
+            task.move_done = move_done
+        if delete_done is not None:
+            task.delete_done = delete_done
+        if rename_done is not None:
+            task.rename_done = rename_done
+        if keep_done is not None:
+            task.keep_done = keep_done
+        
+        if completed_item is not None:
+            task.completed_items.append(completed_item)
+            if len(task.completed_items) > 100:
+                task.completed_items = task.completed_items[-50:]
 
 
 def is_task_cancelled(task_id: str) -> bool:
@@ -3643,6 +3756,18 @@ async def get_task_status(task_id: str):
         current_file=task.current_file,
         error=task.error,
         result=task.result,
+        move_total=task.move_total,
+        move_done=task.move_done,
+        delete_total=task.delete_total,
+        delete_done=task.delete_done,
+        rename_total=task.rename_total,
+        rename_done=task.rename_done,
+        keep_total=task.keep_total,
+        keep_done=task.keep_done,
+        completed_items=task.completed_items,
+        eta_seconds=task.eta_seconds,
+        items_per_second=task.items_per_second,
+        formatted_eta=format_eta(task.eta_seconds) if task.eta_seconds is not None else "计算中...",
     )
 
 
@@ -3665,10 +3790,15 @@ async def cancel_task_endpoint(request: CancelTaskRequest):
 @app.post("/start_execute_task")
 @app.post("/api/start_execute_task")
 async def start_execute_task(request: ExecutePlanRequest):
-    task_id = create_task("execute_plan", total=len(request.plan))
+    task_id = create_task("execute_plan", total=len(request.plan), plan=request.plan)
     
     def run_task():
         update_task_progress(task_id, status="running", message="开始执行炼金计划")
+        
+        move_count = 0
+        delete_count = 0
+        rename_count = 0
+        keep_count = 0
         
         try:
             target_dir = get_target_dir(request.target_path)
@@ -3709,30 +3839,29 @@ async def start_execute_task(request: ExecutePlanRequest):
                 )
                 
                 if item.action not in ALLOWED_ACTIONS:
-                    results.append(
-                        {
-                            "file": item.file,
-                            "action": item.action,
-                            "original_path": item.file,
-                            "new_path": None,
-                            "status": "skipped",
-                            "message": f"不支持的操作：{item.action}",
-                        }
-                    )
+                    result_item = {
+                        "file": item.file,
+                        "action": item.action,
+                        "original_path": item.file,
+                        "new_path": None,
+                        "status": "skipped",
+                        "message": f"不支持的操作：{item.action}",
+                    }
+                    results.append(result_item)
                     continue
                 
                 source_path = resolve_inside_target(target_dir, item.file)
                 if not source_path.exists():
-                    results.append(
-                        {
-                            "file": item.file,
-                            "action": item.action,
-                            "original_path": item.file,
-                            "new_path": None,
-                            "status": "skipped",
-                            "message": "源文件不存在，可能已被处理。",
-                        }
-                    )
+                    result_item = {
+                        "file": item.file,
+                        "action": item.action,
+                        "original_path": item.file,
+                        "new_path": None,
+                        "status": "skipped",
+                        "message": "源文件不存在，可能已被处理。",
+                    }
+                    results.append(result_item)
+                    update_task_progress(task_id, completed_item=result_item)
                     continue
                 
                 if item.action == "delete":
@@ -3749,46 +3878,48 @@ async def start_execute_task(request: ExecutePlanRequest):
                             "new_path": to_target_relative(target_dir, trash_path),
                         }
                     )
-                    results.append(
-                        {
-                            "file": item.file,
-                            "action": item.action,
-                            "original_path": item.file,
-                            "new_path": to_target_relative(target_dir, trash_path),
-                            "absolute_original_path": str(source_path),
-                            "absolute_new_path": str(trash_path),
-                            "status": "success",
-                        }
-                    )
+                    result_item = {
+                        "file": item.file,
+                        "action": item.action,
+                        "original_path": item.file,
+                        "new_path": to_target_relative(target_dir, trash_path),
+                        "absolute_original_path": str(source_path),
+                        "absolute_new_path": str(trash_path),
+                        "status": "success",
+                    }
+                    results.append(result_item)
+                    delete_count += 1
+                    update_task_progress(task_id, delete_done=delete_count, completed_item=result_item)
                     continue
                 
                 if item.action == "keep":
-                    results.append(
-                        {
-                            "file": item.file,
-                            "action": item.action,
-                            "original_path": item.file,
-                            "new_path": item.file,
-                            "absolute_original_path": str(source_path),
-                            "absolute_new_path": str(source_path),
-                            "status": "success",
-                        }
-                    )
-                    continue
-                
-                target_path = resolve_inside_target(target_dir, item.target_path)
-                target_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                shutil.move(str(source_path), str(target_path))
-                snapshot_operations.append(
-                    {
+                    result_item = {
+                        "file": item.file,
                         "action": item.action,
                         "original_path": item.file,
-                        "new_path": item.target_path,
+                        "new_path": item.file,
+                        "absolute_original_path": str(source_path),
+                        "absolute_new_path": str(source_path),
+                        "status": "success",
                     }
-                )
-                results.append(
-                    {
+                    results.append(result_item)
+                    keep_count += 1
+                    update_task_progress(task_id, keep_done=keep_count, completed_item=result_item)
+                    continue
+                
+                if item.action == "move":
+                    target_path = resolve_inside_target(target_dir, item.target_path)
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    shutil.move(str(source_path), str(target_path))
+                    snapshot_operations.append(
+                        {
+                            "action": item.action,
+                            "original_path": item.file,
+                            "new_path": item.target_path,
+                        }
+                    )
+                    result_item = {
                         "file": item.file,
                         "action": item.action,
                         "original_path": item.file,
@@ -3798,7 +3929,36 @@ async def start_execute_task(request: ExecutePlanRequest):
                         "absolute_new_path": str(target_path),
                         "status": "success",
                     }
-                )
+                    results.append(result_item)
+                    move_count += 1
+                    update_task_progress(task_id, move_done=move_count, completed_item=result_item)
+                    continue
+                
+                if item.action == "rename_and_move":
+                    target_path = resolve_inside_target(target_dir, item.target_path)
+                    target_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    shutil.move(str(source_path), str(target_path))
+                    snapshot_operations.append(
+                        {
+                            "action": item.action,
+                            "original_path": item.file,
+                            "new_path": item.target_path,
+                        }
+                    )
+                    result_item = {
+                        "file": item.file,
+                        "action": item.action,
+                        "original_path": item.file,
+                        "target_path": item.target_path,
+                        "new_path": item.target_path,
+                        "absolute_original_path": str(source_path),
+                        "absolute_new_path": str(target_path),
+                        "status": "success",
+                    }
+                    results.append(result_item)
+                    rename_count += 1
+                    update_task_progress(task_id, rename_done=rename_count, completed_item=result_item)
             
             if is_task_cancelled(task_id):
                 update_task_progress(task_id, status="cancelled", message=f"任务已取消，已处理 {len(results)} 个文件")
@@ -3834,6 +3994,10 @@ async def start_execute_task(request: ExecutePlanRequest):
                 status="completed",
                 message=f"执行完成，共处理 {len(results)} 个文件",
                 result=final_result,
+                move_done=move_count,
+                delete_done=delete_count,
+                rename_done=rename_count,
+                keep_done=keep_count,
             )
             
         except HTTPException as e:
