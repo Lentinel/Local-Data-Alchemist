@@ -1907,21 +1907,43 @@ def calculate_file_hash(file_path: Path, fast_mode: bool = True) -> str:
         if fast_mode and file_size > 10 * 1024 * 1024:
             hasher = hashlib.sha256()
             hasher.update(str(file_size).encode())
+            hasher.update(b"|")
             
             with file_path.open("rb") as f:
-                start_bytes = f.read(8192)
+                start_bytes = f.read(16384)
                 hasher.update(start_bytes)
+                hasher.update(b"|")
                 
-                if file_size > 16384:
-                    f.seek(file_size - 8192)
-                    end_bytes = f.read(8192)
-                    hasher.update(end_bytes)
+                if file_size > 65536:
+                    num_samples = min(8, file_size // (2 * 1024 * 1024))
+                    num_samples = max(2, num_samples)
+                    
+                    step = file_size // (num_samples + 1)
+                    
+                    for i in range(1, num_samples + 1):
+                        sample_pos = step * i
+                        try:
+                            f.seek(sample_pos)
+                            sample_bytes = f.read(4096)
+                            hasher.update(sample_bytes)
+                            hasher.update(b"|")
+                        except (OSError, ValueError):
+                            continue
+                
+                if file_size > 32768:
+                    try:
+                        end_pos = max(0, file_size - 16384)
+                        f.seek(end_pos)
+                        end_bytes = f.read(16384)
+                        hasher.update(end_bytes)
+                    except (OSError, ValueError):
+                        pass
             
             return hasher.hexdigest()
         
         hasher = hashlib.sha256()
         with file_path.open("rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
+            for chunk in iter(lambda: f.read(131072), b""):
                 hasher.update(chunk)
         
         return hasher.hexdigest()
