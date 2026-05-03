@@ -9,6 +9,8 @@ import {
   FolderOpen,
   Loader2,
   Sparkles,
+  Eye,
+  X,
 } from 'lucide-vue-next'
 
 const isSelectingFolder = ref(false)
@@ -28,6 +30,19 @@ const error = ref(null)
 const consoleRef = ref(null)
 const consoleLogs = ref([])
 const copyToast = ref(null)
+
+// 文件预览功能
+const isPreviewingFile = ref(false)
+const previewingFile = ref(null)
+const previewContent = ref(null)
+const previewError = ref(null)
+
+// 操作历史记录功能
+const isShowingHistory = ref(false)
+const isLoadingHistory = ref(false)
+const historyList = ref([])
+const selectedHistory = ref(null)
+const historyError = ref(null)
 
 const categoryTone = {
   logs: 'text-amber-300 bg-amber-500/10 border-amber-400/20',
@@ -533,6 +548,141 @@ const exportReport = () => {
   URL.revokeObjectURL(url)
   addLog(`[系统] 导出结案报告: ${link.download}`, 'info')
 }
+
+// 文件预览功能
+const previewFile = async (file) => {
+  if (!targetPath.value || !file.path) {
+    error.value = '无法预览文件：缺少目标目录或文件路径'
+    return
+  }
+
+  isPreviewingFile.value = true
+  previewingFile.value = file
+  previewContent.value = null
+  previewError.value = null
+
+  try {
+    addLog(`[系统] 正在预览文件: ${file.name}`, 'info')
+    const response = await axios.post('/api/preview_file', {
+      target_path: targetPath.value,
+      file_path: file.path,
+    })
+
+    if (response.data.status === 'success') {
+      previewContent.value = response.data.preview
+      addLog(`[系统] 文件预览成功: ${file.name}`, 'info')
+    } else {
+      previewError.value = '预览失败：服务器返回错误状态'
+      addLog(`[错误] 文件预览失败: ${previewError.value}`, 'error')
+    }
+  } catch (err) {
+    previewError.value = err.response?.data?.detail || '文件预览失败，请稍后再试'
+    addLog(`[错误] 文件预览失败: ${previewError.value}`, 'error')
+    console.error('Preview file error:', err)
+  }
+}
+
+const closePreview = () => {
+  isPreviewingFile.value = false
+  previewingFile.value = null
+  previewContent.value = null
+  previewError.value = null
+}
+
+// 操作历史记录功能
+const loadHistory = async () => {
+  if (!targetPath.value) {
+    historyError.value = '无法加载历史记录：缺少目标目录'
+    return
+  }
+
+  isLoadingHistory.value = true
+  historyError.value = null
+
+  try {
+    addLog('[系统] 正在加载操作历史记录...', 'info')
+    const response = await axios.post('/api/list_history', {
+      target_path: targetPath.value,
+    })
+
+    if (response.data.status === 'success') {
+      historyList.value = response.data.history || []
+      addLog(`[系统] 历史记录加载完成，共 ${historyList.value.length} 条记录`, 'info')
+    } else {
+      historyError.value = '加载历史记录失败：服务器返回错误状态'
+      addLog(`[错误] 历史记录加载失败: ${historyError.value}`, 'error')
+    }
+  } catch (err) {
+    historyError.value = err.response?.data?.detail || '加载历史记录失败，请稍后再试'
+    addLog(`[错误] 历史记录加载失败: ${historyError.value}`, 'error')
+    console.error('Load history error:', err)
+  } finally {
+    isLoadingHistory.value = false
+  }
+}
+
+const showHistory = async () => {
+  isShowingHistory.value = true
+  selectedHistory.value = null
+  historyError.value = null
+  await loadHistory()
+}
+
+const hideHistory = () => {
+  isShowingHistory.value = false
+  selectedHistory.value = null
+  historyError.value = null
+}
+
+const viewHistoryDetail = async (historyItem) => {
+  if (!targetPath.value || !historyItem.id) {
+    historyError.value = '无法查看历史记录详情：缺少目标目录或历史记录ID'
+    return
+  }
+
+  try {
+    addLog(`[系统] 正在查看历史记录详情: ${historyItem.id}`, 'info')
+    const response = await axios.post('/api/get_history', {
+      target_path: targetPath.value,
+      history_id: historyItem.id,
+    })
+
+    if (response.data.status === 'success') {
+      selectedHistory.value = response.data.history
+      addLog(`[系统] 历史记录详情加载成功`, 'info')
+    } else {
+      historyError.value = '加载历史记录详情失败：服务器返回错误状态'
+      addLog(`[错误] 历史记录详情加载失败: ${historyError.value}`, 'error')
+    }
+  } catch (err) {
+    historyError.value = err.response?.data?.detail || '加载历史记录详情失败，请稍后再试'
+    addLog(`[错误] 历史记录详情加载失败: ${historyError.value}`, 'error')
+    console.error('Load history detail error:', err)
+  }
+}
+
+const closeHistoryDetail = () => {
+  selectedHistory.value = null
+}
+
+// 格式化日期时间
+const formatDateTime = (dateTimeStr) => {
+  if (!dateTimeStr) return '—'
+  try {
+    const date = new Date(dateTimeStr)
+    return date.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false
+    })
+  } catch {
+    return dateTimeStr
+  }
+}
 </script>
 
 <template>
@@ -971,6 +1121,14 @@ const exportReport = () => {
             <CheckCircle class="text-emerald-500" />
             发现待炼化物质 ({{ files.length }})
           </h2>
+          <button
+            type="button"
+            class="rounded-lg border border-sky-400/30 px-4 py-2 text-sky-100 bg-sky-500/10 hover:bg-sky-500/20 transition-colors text-sm"
+            :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
+            @click="showHistory"
+          >
+            查看历史记录
+          </button>
         </div>
 
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -995,9 +1153,275 @@ const exportReport = () => {
               <p class="text-xs text-slate-500 font-mono truncate">{{ file.path }}</p>
               <p class="text-xs text-slate-500 font-mono uppercase">{{ file.extension || 'UNKNOWN' }} · {{ formatBytes(file.size) }}</p>
             </div>
+            <button
+              type="button"
+              class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors disabled:opacity-50"
+              :disabled="isGeneratingPlan || isExecutingPlan"
+              @click="previewFile(file)"
+              title="预览文件"
+            >
+              <Eye :size="18" class="text-slate-300" />
+            </button>
           </div>
         </div>
       </section>
+
+      <!-- 文件预览弹窗 -->
+      <div v-if="isPreviewingFile" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div class="relative w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
+          <!-- 弹窗头部 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10">
+            <div class="flex items-center gap-3">
+              <FileText :size="24" class="text-sky-300" />
+              <div>
+                <p class="font-medium text-slate-100">{{ previewingFile?.name }}</p>
+                <p class="text-xs text-slate-400 font-mono">{{ previewingFile?.path }}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+              @click="closePreview"
+              title="关闭预览"
+            >
+              <X :size="20" class="text-slate-300" />
+            </button>
+          </div>
+
+          <!-- 弹窗内容 -->
+          <div class="flex-1 overflow-auto p-4">
+            <div v-if="previewError" class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400">
+              <AlertCircle :size="20" />
+              <p>{{ previewError }}</p>
+            </div>
+
+            <div v-else-if="!previewContent" class="flex items-center justify-center h-64">
+              <div class="flex items-center gap-3 text-slate-400">
+                <Loader2 :size="24" class="animate-spin" />
+                <p>正在加载文件预览...</p>
+              </div>
+            </div>
+
+            <div v-else-if="previewContent.type === 'text'" class="w-full">
+              <div class="mb-3 flex items-center gap-2">
+                <span class="text-xs text-slate-400 font-mono uppercase">文本文件预览</span>
+                <span v-if="previewContent.truncated" class="text-xs text-amber-400 font-mono">（已截断，仅显示前 {{ formatBytes(10240) }}）</span>
+              </div>
+              <pre class="p-4 rounded-lg bg-slate-950/70 border border-white/10 text-sm text-slate-200 whitespace-pre-wrap overflow-auto max-h-[60vh]">
+{{ previewContent.content || '文件内容为空' }}
+              </pre>
+            </div>
+
+            <div v-else-if="previewContent.type === 'image'" class="w-full flex flex-col items-center justify-center">
+              <div class="mb-3 text-xs text-slate-400 font-mono uppercase">图片文件预览</div>
+              
+              <!-- 检查 content 是否为有效的 base64 数据（非错误消息） -->
+              <template v-if="previewContent.content && !previewContent.content.startsWith('[') && !previewContent.content.endsWith(']')">
+                <img
+                  :src="`data:image/${previewContent.extension.replace('.', '')};base64,${previewContent.content}`"
+                  :alt="previewingFile?.name"
+                  class="max-w-full max-h-[60vh] object-contain rounded-lg border border-white/10"
+                  @error="(e) => { previewError = '图片预览失败，请检查文件格式'; }"
+                />
+              </template>
+              
+              <!-- 显示错误消息或空状态 -->
+              <div v-else class="p-4 rounded-lg bg-slate-950/70 border border-white/10 text-slate-200">
+                <p>{{ previewContent.content || '无法预览此图片' }}</p>
+              </div>
+            </div>
+
+            <div v-else-if="previewContent.type === 'pdf'" class="w-full">
+              <div class="mb-3 text-xs text-slate-400 font-mono uppercase">PDF文件预览</div>
+              <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10 text-slate-200">
+                <p>{{ previewContent.content }}</p>
+              </div>
+            </div>
+
+            <div v-else class="w-full">
+              <div class="mb-3 text-xs text-slate-400 font-mono uppercase">文件类型：{{ previewContent.type }}</div>
+              <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10 text-slate-200">
+                <p>{{ previewContent.content }}</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 弹窗底部 -->
+          <div class="p-4 border-t border-white/10 flex items-center justify-between">
+            <div class="flex items-center gap-4 text-xs text-slate-400 font-mono">
+              <span>大小：{{ previewingFile ? formatBytes(previewingFile.size) : '—' }}</span>
+              <span>类型：{{ previewingFile?.category || 'unknown' }}</span>
+              <span>扩展名：{{ previewingFile?.extension || 'unknown' }}</span>
+            </div>
+            <button
+              type="button"
+              class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+              @click="closePreview"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 操作历史记录弹窗 -->
+      <div v-if="isShowingHistory" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div class="relative w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
+          <!-- 弹窗头部 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10">
+            <div class="flex items-center gap-3">
+              <Sparkles :size="24" class="text-sky-300" />
+              <div>
+                <p class="font-medium text-slate-100">
+                  {{ selectedHistory ? '历史记录详情' : '操作历史记录' }}
+                </p>
+                <p v-if="!selectedHistory" class="text-xs text-slate-400 font-mono">
+                  共 {{ historyList.length }} 条记录
+                </p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                v-if="selectedHistory"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-xs"
+                @click="closeHistoryDetail"
+              >
+                返回列表
+              </button>
+              <button
+                type="button"
+                class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                @click="hideHistory"
+                title="关闭"
+              >
+                <X :size="20" class="text-slate-300" />
+              </button>
+            </div>
+          </div>
+
+          <!-- 弹窗内容 -->
+          <div class="flex-1 overflow-auto p-4">
+            <div v-if="historyError" class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400">
+              <AlertCircle :size="20" />
+              <p>{{ historyError }}</p>
+            </div>
+
+            <div v-else-if="isLoadingHistory" class="flex items-center justify-center h-64">
+              <div class="flex items-center gap-3 text-slate-400">
+                <Loader2 :size="24" class="animate-spin" />
+                <p>正在加载历史记录...</p>
+              </div>
+            </div>
+
+            <!-- 历史记录详情视图 -->
+            <div v-else-if="selectedHistory" class="w-full space-y-4">
+              <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10 space-y-3">
+                <div class="flex items-center gap-2">
+                  <span :class="[
+                    'px-2 py-0.5 rounded-lg border text-xs font-semibold',
+                    selectedHistory.type === 'execute' 
+                      ? 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20'
+                      : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
+                  ]">
+                    {{ selectedHistory.type === 'execute' ? '执行计划' : '回滚操作' }}
+                  </span>
+                  <span class="text-xs text-slate-400 font-mono">
+                    {{ formatDateTime(selectedHistory.created_at) }}
+                  </span>
+                </div>
+                <p class="text-xs text-slate-400 font-mono">
+                  目标目录：{{ selectedHistory.target_path }}
+                </p>
+                <p class="text-xs text-slate-400 font-mono">
+                  历史记录ID：{{ selectedHistory.id }}
+                </p>
+              </div>
+
+              <div v-if="selectedHistory.results && selectedHistory.results.length > 0">
+                <p class="text-sm text-slate-400 font-semibold mb-2">操作结果（共 {{ selectedHistory.results.length }} 条）</p>
+                <div class="space-y-2 max-h-[40vh] overflow-auto">
+                  <div
+                    v-for="(result, index) in selectedHistory.results"
+                    :key="`${result.file}-${index}`"
+                    class="p-3 rounded-lg bg-slate-950/50 border border-white/5 space-y-1"
+                  >
+                    <div class="flex items-center gap-2">
+                      <p class="text-sm text-slate-200 font-medium truncate">{{ result.file }}</p>
+                      <span :class="[
+                        'px-2 py-0.5 rounded-lg border text-xs',
+                        actionTone[result.action] || actionTone.keep
+                      ]">
+                        {{ actionLabel[result.action] || result.action }}
+                      </span>
+                    </div>
+                    <p v-if="result.new_path" class="text-xs text-slate-400 font-mono">
+                      {{ result.original_path }} → {{ result.new_path }}
+                    </p>
+                    <p class="text-xs text-slate-400 font-mono">
+                      状态：{{ result.status }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div v-else class="p-4 rounded-lg bg-slate-950/50 border border-white/5 text-center text-slate-400">
+                <p>暂无操作结果</p>
+              </div>
+            </div>
+
+            <!-- 历史记录列表视图 -->
+            <div v-else-if="historyList.length > 0" class="w-full space-y-3">
+              <div
+                v-for="(item, index) in historyList"
+                :key="item.id"
+                class="p-4 rounded-lg glass hover:bg-white/10 transition-colors cursor-pointer"
+                @click="viewHistoryDetail(item)"
+              >
+                <div class="flex items-center justify-between mb-2">
+                  <div class="flex items-center gap-2">
+                    <span :class="[
+                      'px-2 py-0.5 rounded-lg border text-xs font-semibold',
+                      item.type === 'execute' 
+                        ? 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20'
+                        : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
+                    ]">
+                      {{ item.type === 'execute' ? '执行计划' : '回滚操作' }}
+                    </span>
+                    <span class="text-xs text-slate-400 font-mono">
+                      {{ formatDateTime(item.created_at) }}
+                    </span>
+                  </div>
+                  <span class="text-xs text-slate-400 font-mono">
+                    {{ item.results_count }} 条操作
+                  </span>
+                </div>
+                <p class="text-xs text-slate-400 font-mono truncate">
+                  目标目录：{{ item.target_path }}
+                </p>
+              </div>
+            </div>
+
+            <!-- 无历史记录视图 -->
+            <div v-else class="flex flex-col items-center justify-center h-64 text-slate-400">
+              <Sparkles :size="48" class="mb-3 text-slate-600" />
+              <p class="text-lg font-medium">暂无操作历史记录</p>
+              <p class="text-sm mt-1">执行文件整理计划后，历史记录将显示在这里</p>
+            </div>
+          </div>
+
+          <!-- 弹窗底部 -->
+          <div class="p-4 border-t border-white/10 flex items-center justify-end">
+            <button
+              type="button"
+              class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+              @click="hideHistory"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
 
       <section class="space-y-4 animate-in fade-in slide-in-from-bottom-8 duration-700">
         <div class="flex items-center justify-between">

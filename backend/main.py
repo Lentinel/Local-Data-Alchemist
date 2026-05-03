@@ -4,9 +4,10 @@ import shutil
 import subprocess
 import uuid
 from collections import Counter
-from datetime import date
+from datetime import date, datetime
 import hashlib
 import re
+import base64
 from pathlib import Path
 
 import tkinter as tk
@@ -148,6 +149,20 @@ class UndoPlanRequest(BaseModel):
     target_path: str
 
 
+class FilePreviewRequest(BaseModel):
+    target_path: str
+    file_path: str
+
+
+class ListHistoryRequest(BaseModel):
+    target_path: str
+
+
+class GetHistoryRequest(BaseModel):
+    target_path: str
+    history_id: str
+
+
 def classify_file(extension: str) -> str:
     for category, extensions in CATEGORY_RULES.items():
         if extension in extensions:
@@ -217,6 +232,28 @@ def get_snapshot_path(target_dir: Path) -> Path:
     return target_dir / "snapshot.json"
 
 
+def get_history_dir(target_dir: Path) -> Path:
+    return target_dir / ".alchemy_history"
+
+
+def is_valid_history_id(history_id: str) -> bool:
+    if not history_id or not isinstance(history_id, str):
+        return False
+    if len(history_id) != 32:
+        return False
+    if not re.match(r'^[0-9a-f]+$', history_id):
+        return False
+    return True
+
+
+def get_history_path(target_dir: Path, history_id: str) -> Path:
+    if not is_valid_history_id(history_id):
+        raise HTTPException(status_code=400, detail=f"无效的历史记录ID：{history_id}")
+    
+    history_dir = get_history_dir(target_dir)
+    return history_dir / f"{history_id}.json"
+
+
 def write_snapshot(target_dir: Path, operations: list[dict]) -> None:
     snapshot_path = get_snapshot_path(target_dir)
     snapshot = {
@@ -225,6 +262,86 @@ def write_snapshot(target_dir: Path, operations: list[dict]) -> None:
         "operations": operations,
     }
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def write_history(
+    target_dir: Path,
+    history_id: str,
+    operation_type: str,
+    target_path: str,
+    plan: list[dict],
+    results: list[dict],
+    snapshot_path: str = None,
+) -> None:
+    try:
+        history_dir = get_history_dir(target_dir)
+        history_dir.mkdir(parents=True, exist_ok=True)
+        
+        history_record = {
+            "id": history_id,
+            "type": operation_type,
+            "target_path": target_path,
+            "created_at": datetime.now().isoformat(),
+            "plan": plan,
+            "results": results,
+            "snapshot_path": snapshot_path,
+        }
+        
+        history_file = get_history_path(target_dir, history_id)
+        history_file.write_text(json.dumps(history_record, ensure_ascii=False, indent=2), encoding="utf-8")
+    except (OSError, Exception) as exc:
+        # 历史记录写入失败不应影响主流程，只记录错误（在实际生产环境中可能需要日志记录）
+        print(f"警告：历史记录写入失败：{str(exc)}")
+
+
+def get_safe_sort_key(history_item: dict) -> tuple:
+    created_at = history_item.get("created_at", "")
+    
+    if not created_at or not isinstance(created_at, str):
+        return (0, "")
+    
+    # 尝试解析日期时间字符串
+    try:
+        # 尝试解析 ISO 格式日期时间
+        if "T" in created_at:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            return (2, dt.isoformat())
+        else:
+            # 尝试解析简单日期格式
+            return (1, created_at)
+    except (ValueError, TypeError, Exception):
+        return (0, created_at)
+
+
+def list_history(target_dir: Path) -> list[dict]:
+    history_dir = get_history_dir(target_dir)
+    if not history_dir.exists():
+        return []
+    
+    history_files = []
+    for file in history_dir.glob("*.json"):
+        try:
+            content = json.loads(file.read_text(encoding="utf-8"))
+            # 确保至少包含 id 字段
+            if content.get("id"):
+                history_files.append(content)
+        except (json.JSONDecodeError, OSError, Exception):
+            continue
+    
+    # 按创建时间倒序排列，使用安全的排序键
+    history_files.sort(key=get_safe_sort_key, reverse=True)
+    return history_files
+
+
+def get_history(target_dir: Path, history_id: str) -> dict:
+    history_file = get_history_path(target_dir, history_id)
+    if not history_file.exists():
+        raise HTTPException(status_code=404, detail=f"历史记录不存在：{history_id}")
+    
+    try:
+        return json.loads(history_file.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"历史记录已损坏：{str(exc)}") from exc
 
 
 def build_llm_prompt(files: list[FileInfo]) -> str:
@@ -276,6 +393,69 @@ def peek_file_content(file_path: Path, max_bytes: int = 512) -> str:
             return file.read(max_bytes).decode("utf-8", errors="ignore").strip()
     except OSError:
         return "[Unreadable File]"
+
+
+def get_file_preview(file_path: Path, max_bytes: int = 10240, max_image_bytes: int = 10 * 1024 * 1024) -> dict:
+    extension = file_path.suffix.lower()
+    file_name = file_path.name
+    
+    # 安全获取文件大小
+    try:
+        file_size = file_path.stat().st_size
+    except (OSError, Exception):
+        file_size = 0
+
+    preview = {
+        "name": file_name,
+        "path": str(file_path),
+        "extension": extension,
+        "size": file_size,
+        "type": "unknown",
+        "content": None,
+        "truncated": False,
+    }
+
+    # 文本文件预览
+    if extension in TEXT_EXTENSIONS:
+        preview["type"] = "text"
+        try:
+            with file_path.open("rb") as file:
+                content_bytes = file.read(max_bytes + 1)
+                if len(content_bytes) > max_bytes:
+                    preview["truncated"] = True
+                    content_bytes = content_bytes[:max_bytes]
+                preview["content"] = content_bytes.decode("utf-8", errors="ignore")
+        except (OSError, Exception):
+            preview["content"] = "[无法读取文件]"
+        return preview
+
+    # 图片文件预览
+    image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+    if extension in image_extensions:
+        preview["type"] = "image"
+        
+        # 检查图片文件大小，避免大图片导致内存问题
+        if file_size > max_image_bytes:
+            preview["content"] = f"[图片文件过大，超过 {max_image_bytes // 1024 // 1024}MB，不支持预览]"
+            return preview
+        
+        try:
+            with file_path.open("rb") as file:
+                preview["content"] = base64.b64encode(file.read()).decode("utf-8")
+        except (OSError, Exception):
+            preview["content"] = None
+        return preview
+
+    # PDF文件预览
+    if extension == ".pdf":
+        preview["type"] = "pdf"
+        preview["content"] = "PDF文件预览功能待实现"
+        return preview
+
+    # 其他二进制文件
+    preview["type"] = "binary"
+    preview["content"] = "[二进制文件，不支持预览]"
+    return preview
 
 
 def strip_markdown_fence(content: str) -> str:
@@ -833,12 +1013,27 @@ async def execute_plan_impl(request: ExecutePlanRequest) -> dict:
 
     write_snapshot(target_dir, snapshot_operations)
 
+    # 保存操作历史记录
+    history_id = uuid.uuid4().hex
+    plan_dict = [item.dict() for item in request.plan] if request.plan else []
+    
+    write_history(
+        target_dir=target_dir,
+        history_id=history_id,
+        operation_type="execute",
+        target_path=str(target_dir),
+        plan=plan_dict,
+        results=results,
+        snapshot_path=str(snapshot_path),
+    )
+
     return {
         "status": "success",
         "executed": len(results),
         "results": results,
         "snapshot": snapshot_path.name,
         "snapshot_path": str(snapshot_path),
+        "history_id": history_id,
     }
 
 
@@ -898,35 +1093,47 @@ async def undo_plan_impl(request: UndoPlanRequest) -> dict:
     if trash_dir.exists():
         shutil.rmtree(trash_dir)
 
+    # 保存回滚操作历史记录
+    history_id = uuid.uuid4().hex
+    
+    write_history(
+        target_dir=target_dir,
+        history_id=history_id,
+        operation_type="undo",
+        target_path=str(target_dir),
+        plan=[],
+        results=results,
+        snapshot_path=None,
+    )
+
     return {
         "status": "success",
         "message": "已恢复到炼金前状态",
         "restored": len(results),
         "results": results,
+        "history_id": history_id,
     }
 
 
 @app.get("/select_folder")
 @app.get("/api/select_folder")
 def select_folder():
+    root = None
     try:
         # 初始化一个隐藏的 Tkinter 根窗口
         root = tk.Tk()
-        root.withdraw() # 隐藏主窗口
-        
         # 极客小细节：强行让弹窗置顶，防止它偷偷躲在浏览器网页后面导致你找不到
         root.attributes('-topmost', True)
+        root.withdraw() # 隐藏主窗口
         
         # 呼出系统原生的文件夹选择对话框
         selected_path = filedialog.askdirectory(
-            title='Select Local Data Alchemist Target'
+            title='Select Local Data Alchemist Target',
+            initialdir=os.path.expanduser('~')
         )
-        
-        # 销毁根窗口释放资源
-        root.destroy()
 
-        # 如果用户点了取消或关掉了弹窗
-        if not selected_path:
+        # 如果用户点了取消或关掉了弹窗，filedialog.askdirectory 会返回空字符串或空元组
+        if not selected_path or selected_path == () or (isinstance(selected_path, str) and not selected_path.strip()):
             return {"status": "cancelled", "target_path": None}
 
         # --- 以下保留你原有的处理逻辑 ---
@@ -941,6 +1148,15 @@ def select_folder():
 
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"本地文件夹选择器启动失败：{str(exc)}") from exc
+    finally:
+        # 确保根窗口总是被销毁，释放资源
+        if root:
+            try:
+                root.update()
+                root.destroy()
+            except Exception:
+                # 忽略销毁窗口时的异常
+                pass
 
 
 @app.post("/lock_folder")
@@ -965,6 +1181,80 @@ async def execute_plan(request: ExecutePlanRequest):
 @app.post("/api/undo_plan")
 async def undo_plan(request: UndoPlanRequest):
     return await undo_plan_impl(request)
+
+
+@app.post("/preview_file")
+@app.post("/api/preview_file")
+async def preview_file(request: FilePreviewRequest):
+    try:
+        target_dir = get_target_dir(request.target_path)
+        file_path = resolve_inside_target(target_dir, request.file_path)
+        
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail=f"文件不存在：{request.file_path}")
+        
+        if not file_path.is_file():
+            raise HTTPException(status_code=400, detail=f"不是文件：{request.file_path}")
+        
+        preview = get_file_preview(file_path)
+        return {
+            "status": "success",
+            "preview": preview
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"文件预览失败：{str(exc)}") from exc
+
+
+@app.post("/list_history")
+@app.post("/api/list_history")
+async def list_history(request: ListHistoryRequest):
+    try:
+        target_dir = get_target_dir(request.target_path)
+        history_list = list_history(target_dir)
+        
+        # 简化返回结果，只返回关键信息
+        simplified_history = []
+        for item in history_list:
+            simplified_history.append({
+                "id": item.get("id"),
+                "type": item.get("type"),
+                "target_path": item.get("target_path"),
+                "created_at": item.get("created_at"),
+                "results_count": len(item.get("results", [])),
+                "snapshot_path": item.get("snapshot_path"),
+            })
+        
+        return {
+            "status": "success",
+            "history": simplified_history,
+            "total": len(simplified_history),
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"获取历史记录失败：{str(exc)}") from exc
+
+
+@app.post("/get_history")
+@app.post("/api/get_history")
+async def get_history_detail(request: GetHistoryRequest):
+    try:
+        target_dir = get_target_dir(request.target_path)
+        history = get_history(target_dir, request.history_id)
+        
+        return {
+            "status": "success",
+            "history": history,
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"获取历史记录详情失败：{str(exc)}") from exc
 
 
 @app.get("/")
