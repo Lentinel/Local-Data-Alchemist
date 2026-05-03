@@ -9,6 +9,7 @@ import {
   Check,
   CheckCircle,
   FileText,
+  Folder,
   FolderOpen,
   HardDrive,
   Loader2,
@@ -19,11 +20,13 @@ import {
   Search,
   Filter,
   ChevronDown,
+  ChevronRight,
   Star,
   Clock,
   Copy,
   Settings,
   Trash2,
+  PieChart,
 } from 'lucide-vue-next'
 
 const isSelectingFolder = ref(false)
@@ -1966,6 +1969,51 @@ const getWeeklyActivityData = () => {
   }
 
   return dashboardStats.value.weekly_activity
+}
+
+const expandedDirs = ref(new Set(['.']))
+
+const toggleDir = (path) => {
+  if (expandedDirs.value.has(path)) {
+    expandedDirs.value.delete(path)
+  } else {
+    expandedDirs.value.add(path)
+  }
+}
+
+const getDirectoryTree = () => {
+  if (!dashboardStats.value?.directory_tree) {
+    return null
+  }
+  return dashboardStats.value.directory_tree
+}
+
+const getDirectoryList = () => {
+  if (!dashboardStats.value?.directory_list) {
+    return []
+  }
+  return dashboardStats.value.directory_list
+}
+
+const getLargestFiles = () => {
+  if (!dashboardStats.value?.largest_files) {
+    return []
+  }
+  return dashboardStats.value.largest_files
+}
+
+const flattenDirectoryTree = (node, depth = 0, parentPath = '') => {
+  const result = []
+  const currentPath = parentPath ? `${parentPath}/${node.name}` : node.name
+  result.push({ ...node, depth, fullPath: currentPath })
+  
+  if (node.children) {
+    for (const child of Object.values(node.children)) {
+      result.push(...flattenDirectoryTree(child, depth + 1, currentPath))
+    }
+  }
+  
+  return result
 }
 
 // 多目录批量处理方法
@@ -4512,6 +4560,167 @@ const getHistoryTypeLabels = (type) => {
                         </div>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 目录树和最大文件 -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- 目录树结构 -->
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <h3 class="text-sm font-medium text-slate-200 mb-4 flex items-center gap-2">
+                    <Folder :size="16" class="text-amber-400" />
+                    目录结构分布
+                  </h3>
+                  <div class="space-y-1 max-h-80 overflow-auto">
+                    <template v-if="getDirectoryTree()">
+                      <template v-for="node in flattenDirectoryTree(getDirectoryTree())" :key="node.fullPath">
+                        <div
+                          class="flex items-center justify-between py-1.5 px-2 rounded hover:bg-white/5 transition-colors cursor-pointer"
+                          :style="{ paddingLeft: `${node.depth * 16 + 8}px` }"
+                          @click="node.children && Object.keys(node.children).length > 0 ? toggleDir(node.fullPath) : null"
+                        >
+                          <div class="flex items-center gap-2 min-w-0 flex-1">
+                            <ChevronRight
+                              v-if="node.children && Object.keys(node.children).length > 0"
+                              :size="14"
+                              class="text-slate-500 flex-shrink-0 transition-transform"
+                              :class="{ 'rotate-90': expandedDirs.has(node.fullPath) }"
+                            />
+                            <div v-else class="w-3.5 flex-shrink-0" />
+                            <Folder
+                              v-if="node.children && Object.keys(node.children).length > 0"
+                              :size="14"
+                              class="text-amber-400 flex-shrink-0"
+                            />
+                            <FileText
+                              v-else
+                              :size="14"
+                              class="text-slate-500 flex-shrink-0"
+                            />
+                            <span class="text-sm text-slate-200 truncate">
+                              {{ node.name === '.' ? '[根目录]' : node.name }}
+                            </span>
+                          </div>
+                          <div class="flex items-center gap-3 flex-shrink-0 ml-2">
+                            <span class="text-xs text-slate-400 font-mono">{{ node.count }} 个</span>
+                            <span class="text-xs text-slate-500 font-mono">{{ formatBytes(node.size) }}</span>
+                          </div>
+                        </div>
+                        <template v-if="node.children && expandedDirs.has(node.fullPath)">
+                          <div
+                            v-for="child in Object.values(node.children)"
+                            :key="child.path"
+                            class="flex items-center justify-between py-1.5 px-2 rounded hover:bg-white/5 transition-colors"
+                            :style="{ paddingLeft: `${(node.depth + 1) * 16 + 8}px` }"
+                          >
+                            <div class="flex items-center gap-2 min-w-0 flex-1">
+                              <div class="w-3.5 flex-shrink-0" />
+                              <Folder v-if="child.children && Object.keys(child.children).length > 0" :size="14" class="text-amber-400 flex-shrink-0" />
+                              <FileText v-else :size="14" class="text-slate-500 flex-shrink-0" />
+                              <span class="text-sm text-slate-200 truncate">{{ child.name }}</span>
+                            </div>
+                            <div class="flex items-center gap-3 flex-shrink-0 ml-2">
+                              <span class="text-xs text-slate-400 font-mono">{{ child.count }} 个</span>
+                              <span class="text-xs text-slate-500 font-mono">{{ formatBytes(child.size) }}</span>
+                            </div>
+                          </div>
+                        </template>
+                      </template>
+                    </template>
+                    <div v-else class="text-center py-8 text-slate-500 text-sm">
+                      暂无目录数据
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 最大文件列表 -->
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <h3 class="text-sm font-medium text-slate-200 mb-4 flex items-center gap-2">
+                    <FileText :size="16" class="text-sky-400" />
+                    最大文件 TOP 10
+                  </h3>
+                  <div class="space-y-2 max-h-80 overflow-auto">
+                    <template v-if="getLargestFiles().length > 0">
+                      <div
+                        v-for="(file, index) in getLargestFiles()"
+                        :key="file.path"
+                        class="flex items-center justify-between py-2 px-3 rounded-lg bg-slate-900/50 border border-white/5"
+                      >
+                        <div class="flex items-center gap-3 min-w-0 flex-1">
+                          <span class="text-xs font-mono text-slate-500 w-5 flex-shrink-0">{{ index + 1 }}</span>
+                          <div
+                            class="p-1.5 rounded flex-shrink-0"
+                            :class="[
+                              file.category === 'images' ? 'bg-emerald-500/10' :
+                              file.category === 'documents' ? 'bg-sky-500/10' :
+                              file.category === 'archives' ? 'bg-fuchsia-500/10' :
+                              file.category === 'code' ? 'bg-lime-500/10' :
+                              'bg-slate-500/10'
+                            ]"
+                          >
+                            <FileText
+                              :size="14"
+                              :class="[
+                                file.category === 'images' ? 'text-emerald-400' :
+                                file.category === 'documents' ? 'text-sky-400' :
+                                file.category === 'archives' ? 'text-fuchsia-400' :
+                                file.category === 'code' ? 'text-lime-400' :
+                                'text-slate-400'
+                              ]"
+                            />
+                          </div>
+                          <div class="min-w-0 flex-1">
+                            <p class="text-sm text-slate-200 truncate">{{ file.name }}</p>
+                            <p class="text-xs text-slate-500 font-mono truncate">{{ file.extension || 'UNKNOWN' }}</p>
+                          </div>
+                        </div>
+                        <div class="flex flex-col items-end flex-shrink-0 ml-3">
+                          <span class="text-sm font-medium text-sky-300">{{ formatBytes(file.size) }}</span>
+                          <span
+                            class="text-xs font-mono"
+                            :class="[
+                              file.size > 100 * 1024 * 1024 ? 'text-red-400' :
+                              file.size > 10 * 1024 * 1024 ? 'text-amber-400' :
+                              'text-slate-400'
+                            ]"
+                          >
+                            {{ file.size > 100 * 1024 * 1024 ? '超大' : file.size > 10 * 1024 * 1024 ? '大' : '' }}
+                          </span>
+                        </div>
+                      </div>
+                    </template>
+                    <div v-else class="text-center py-8 text-slate-500 text-sm">
+                      暂无文件数据
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 文件类型详细分布（增强版） -->
+              <div v-if="calculatePieChartPercentages().length > 0" class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                <h3 class="text-sm font-medium text-slate-200 mb-4 flex items-center gap-2">
+                  <PieChart :size="16" class="text-fuchsia-400" />
+                  文件类型详细分布
+                </h3>
+                <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+                  <div
+                    v-for="segment in calculatePieChartPercentages()"
+                    :key="segment.key"
+                    class="p-3 rounded-lg bg-slate-900/50 border border-white/5 text-center"
+                  >
+                    <div
+                      class="w-12 h-12 mx-auto mb-2 rounded-full flex items-center justify-center"
+                      :style="{ backgroundColor: segment.color + '20' }"
+                    >
+                      <div
+                        class="w-6 h-6 rounded-full"
+                        :style="{ backgroundColor: segment.color }"
+                      />
+                    </div>
+                    <p class="text-sm font-medium text-slate-200">{{ segment.label }}</p>
+                    <p class="text-lg font-bold" :style="{ color: segment.color }">{{ segment.count }}</p>
+                    <p class="text-xs text-slate-400">{{ segment.percentage }}% · {{ formatBytes(segment.size) }}</p>
                   </div>
                 </div>
               </div>

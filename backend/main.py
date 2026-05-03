@@ -906,10 +906,30 @@ def calculate_dashboard_stats(
     for d in week_dates:
         weekly_stats[d.isoformat()] = {"count": 0, "size": 0, "date": d.isoformat()}
     
+    directory_tree = {
+        "name": ".",
+        "path": ".",
+        "count": 0,
+        "size": 0,
+        "children": {}
+    }
+    
+    all_files = []
+    
     for file_info in files_info:
         category = file_info.get("category", "unknown")
         size = file_info.get("size", 0)
         extension = file_info.get("extension", "").lower()
+        file_path_str = file_info.get("path", "")
+        file_name = file_info.get("name", file_path_str)
+        
+        all_files.append({
+            "name": file_name,
+            "path": file_path_str,
+            "size": size,
+            "extension": extension,
+            "category": category
+        })
         
         if category in category_stats:
             category_stats[category]["count"] += 1
@@ -937,7 +957,7 @@ def calculate_dashboard_stats(
             size_buckets["huge"]["count"] += 1
             size_buckets["huge"]["size"] += size
         
-        file_path = resolve_inside_target(target_dir, file_info.get("path", ""))
+        file_path = resolve_inside_target(target_dir, file_path_str)
         if file_path.exists():
             mod_date = get_file_modification_time(file_path)
             if mod_date:
@@ -945,12 +965,54 @@ def calculate_dashboard_stats(
                 if date_str in weekly_stats:
                     weekly_stats[date_str]["count"] += 1
                     weekly_stats[date_str]["size"] += size
+        
+        parent_dir = Path(file_path_str).parent
+        current = directory_tree
+        current["count"] += 1
+        current["size"] += size
+        
+        if parent_dir != Path("."):
+            parts = parent_dir.as_posix().split("/")
+            for part in parts:
+                if part and part != ".":
+                    if part not in current["children"]:
+                        current["children"][part] = {
+                            "name": part,
+                            "path": part,
+                            "count": 0,
+                            "size": 0,
+                            "children": {}
+                        }
+                    current = current["children"][part]
+                    current["count"] += 1
+                    current["size"] += size
+    
+    def flatten_tree(node, parent_path=""):
+        result = []
+        current_path = parent_path + "/" + node["name"] if parent_path else node["name"]
+        node["full_path"] = current_path
+        result.append(node)
+        
+        for child in node["children"].values():
+            result.extend(flatten_tree(child, current_path))
+        
+        return result
+    
+    flattened_dirs = flatten_tree(directory_tree)
+    directory_list = sorted(
+        [d for d in flattened_dirs if d["name"] != "."],
+        key=lambda x: x["count"],
+        reverse=True
+    )[:20]
+    
+    sorted_files = sorted(all_files, key=lambda x: x["size"], reverse=True)
+    largest_files = sorted_files[:10]
     
     top_extensions = sorted(
         extension_counts.items(),
         key=lambda x: x[1]["count"],
         reverse=True
-    )[:10]
+    )[:15]
     
     history_stats = None
     if include_history:
@@ -983,6 +1045,15 @@ def calculate_dashboard_stats(
                 except (ValueError, TypeError):
                     pass
     
+    def tree_to_dict(node):
+        return {
+            "name": node["name"],
+            "path": node["path"],
+            "count": node["count"],
+            "size": node["size"],
+            "children": {k: tree_to_dict(v) for k, v in node["children"].items()}
+        }
+    
     return {
         "overview": {
             "total_files": total_files,
@@ -995,6 +1066,13 @@ def calculate_dashboard_stats(
         },
         "weekly_activity": list(weekly_stats.values()),
         "history_stats": history_stats,
+        "directory_tree": tree_to_dict(directory_tree),
+        "directory_list": directory_list,
+        "largest_files": largest_files,
+        "all_files_count": len(all_files),
+        "categories_detail": {
+            k: v for k, v in category_stats.items() if v["count"] > 0
+        }
     }
 
 
