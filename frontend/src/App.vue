@@ -11,6 +11,12 @@ import {
   Sparkles,
   Eye,
   X,
+  Search,
+  Filter,
+  ChevronDown,
+  Star,
+  Clock,
+  HardDrive,
 } from 'lucide-vue-next'
 
 const isSelectingFolder = ref(false)
@@ -43,6 +49,17 @@ const isLoadingHistory = ref(false)
 const historyList = ref([])
 const selectedHistory = ref(null)
 const historyError = ref(null)
+
+// 文件搜索和过滤功能
+const searchQuery = ref('')
+const selectedCategory = ref('all')
+const isShowingFilters = ref(false)
+
+// 文件时间线视图和收藏功能
+const viewMode = ref('list') // 'list' 或 'timeline'
+const favoriteFiles = ref(new Set())
+const showFavoritesOnly = ref(false)
+const isLoadingFavorites = ref(false)
 
 const categoryTone = {
   logs: 'text-amber-300 bg-amber-500/10 border-amber-400/20',
@@ -126,6 +143,105 @@ const formattedFinancialTotal = computed(() => new Intl.NumberFormat('zh-CN', {
   style: 'currency',
   currency: 'CNY',
 }).format(animatedFinancialTotal.value))
+
+// 文件搜索和过滤的计算属性
+const filteredFiles = computed(() => {
+  let result = [...files.value]
+  
+  // 搜索过滤
+  if (searchQuery.value.trim()) {
+    const query = searchQuery.value.trim().toLowerCase()
+    result = result.filter(file => 
+      file.name.toLowerCase().includes(query) || 
+      file.path.toLowerCase().includes(query) ||
+      (file.extension && file.extension.toLowerCase().includes(query))
+    )
+  }
+  
+  // 分类过滤
+  if (selectedCategory.value !== 'all') {
+    result = result.filter(file => file.category === selectedCategory.value)
+  }
+  
+  // 收藏过滤
+  if (showFavoritesOnly.value) {
+    result = result.filter(file => favoriteFiles.value.has(file.path))
+  }
+  
+  return result
+})
+
+// 计算不同分类的文件数量，用于过滤选项
+const categoryStats = computed(() => {
+  const stats = {}
+  files.value.forEach(file => {
+    const cat = file.category || 'unknown'
+    stats[cat] = (stats[cat] || 0) + 1
+  })
+  return stats
+})
+
+// 时间线视图的分组文件（按扩展名或目录分组）
+const timelineGroups = computed(() => {
+  const groups = {}
+  
+  filteredFiles.value.forEach(file => {
+    // 按扩展名分组
+    const ext = file.extension || 'unknown'
+    if (!groups[ext]) {
+      groups[ext] = {
+        name: ext.toUpperCase(),
+        files: [],
+        totalSize: 0,
+        count: 0
+      }
+    }
+    groups[ext].files.push(file)
+    groups[ext].totalSize += file.size || 0
+    groups[ext].count++
+  })
+  
+  // 转换为数组并排序
+  return Object.values(groups).sort((a, b) => b.count - a.count)
+})
+
+// 文件夹大小分析
+const folderAnalysis = computed(() => {
+  const totalFiles = files.value.length
+  const totalSize = files.value.reduce((sum, file) => sum + (file.size || 0), 0)
+  
+  // 按分类统计大小
+  const categorySizes = {}
+  files.value.forEach(file => {
+    const cat = file.category || 'unknown'
+    if (!categorySizes[cat]) {
+      categorySizes[cat] = 0
+    }
+    categorySizes[cat] += file.size || 0
+  })
+  
+  // 找出最大的文件
+  const largestFiles = [...files.value]
+    .sort((a, b) => (b.size || 0) - (a.size || 0))
+    .slice(0, 10)
+  
+  return {
+    totalFiles,
+    totalSize,
+    categorySizes,
+    largestFiles
+  }
+})
+
+// 分类标签映射
+const categoryLabels = {
+  logs: '日志文件',
+  images: '图片',
+  documents: '文档',
+  archives: '压缩包',
+  code: '代码文件',
+  unknown: '未知类型'
+}
 
 const formatMoney = (amount, currency) => {
   if (!Number.isFinite(amount)) {
@@ -683,6 +799,31 @@ const formatDateTime = (dateTimeStr) => {
     return dateTimeStr
   }
 }
+
+// 文件收藏功能
+const toggleFavorite = (file) => {
+  if (favoriteFiles.value.has(file.path)) {
+    favoriteFiles.value.delete(file.path)
+    addLog(`[系统] 已取消收藏: ${file.name}`, 'info')
+  } else {
+    favoriteFiles.value.add(file.path)
+    addLog(`[系统] 已添加收藏: ${file.name}`, 'info')
+  }
+}
+
+// 清除搜索和过滤
+const clearFilters = () => {
+  searchQuery.value = ''
+  selectedCategory.value = 'all'
+  showFavoritesOnly.value = false
+  addLog('[系统] 已清除所有搜索和过滤条件', 'info')
+}
+
+// 切换视图模式
+const toggleViewMode = () => {
+  viewMode.value = viewMode.value === 'list' ? 'timeline' : 'list'
+  addLog(`[系统] 已切换到${viewMode.value === 'list' ? '列表视图' : '时间线视图'}`, 'info')
+}
 </script>
 
 <template>
@@ -1116,52 +1257,360 @@ const formatDateTime = (dateTimeStr) => {
       </section>
 
       <section v-if="files.length > 0" class="space-y-6 animate-in fade-in slide-in-from-bottom-8 duration-700">
-        <div class="flex items-center justify-between">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <h2 class="text-2xl font-bold flex items-center gap-3">
             <CheckCircle class="text-emerald-500" />
             发现待炼化物质 ({{ files.length }})
           </h2>
+          <div class="flex items-center gap-2">
+            <button
+              type="button"
+              class="px-3 py-1.5 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-xs"
+              :class="[
+                viewMode === 'list' 
+                  ? 'text-sky-300 border-sky-400/30 bg-sky-500/10' 
+                  : 'text-slate-300'
+              ]"
+              @click="viewMode = 'list'"
+              title="列表视图"
+            >
+              列表视图
+            </button>
+            <button
+              type="button"
+              class="px-3 py-1.5 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-xs"
+              :class="[
+                viewMode === 'timeline' 
+                  ? 'text-sky-300 border-sky-400/30 bg-sky-500/10' 
+                  : 'text-slate-300'
+              ]"
+              @click="viewMode = 'timeline'"
+              title="时间线视图"
+            >
+              分组视图
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-sky-400/30 px-4 py-2 text-sky-100 bg-sky-500/10 hover:bg-sky-500/20 transition-colors text-sm"
+              :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
+              @click="showHistory"
+            >
+              查看历史记录
+            </button>
+          </div>
+        </div>
+
+        <!-- 搜索和过滤区域 -->
+        <div class="space-y-3">
+          <div class="flex flex-col md:flex-row gap-3">
+            <!-- 搜索框 -->
+            <div class="relative flex-1">
+              <div class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                <Search :size="18" />
+              </div>
+              <input
+                type="text"
+                v-model="searchQuery"
+                placeholder="搜索文件名、路径或扩展名..."
+                class="w-full pl-10 pr-10 py-2.5 rounded-lg glass border border-white/10 text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-sky-400/50 transition-colors"
+              />
+              <button
+                v-if="searchQuery"
+                type="button"
+                class="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-200"
+                @click="searchQuery = ''"
+              >
+                <X :size="16" />
+              </button>
+            </div>
+
+            <!-- 过滤按钮 -->
+            <button
+              type="button"
+              class="flex items-center gap-2 px-4 py-2.5 rounded-lg glass border border-white/10 text-slate-200 hover:bg-white/10 transition-colors"
+              @click="isShowingFilters = !isShowingFilters"
+            >
+              <Filter :size="18" />
+              <span>过滤选项</span>
+              <ChevronDown :size="16" :class="['transition-transform', isShowingFilters ? 'rotate-180' : '']" />
+            </button>
+          </div>
+
+          <!-- 过滤选项面板 -->
+          <div v-if="isShowingFilters" class="p-4 rounded-lg glass border border-white/10 space-y-4">
+            <!-- 分类过滤 -->
+            <div>
+              <label class="block text-sm text-slate-300 mb-2">文件类型</label>
+              <div class="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  class="px-3 py-1.5 rounded-lg border text-xs transition-colors"
+                  :class="[
+                    selectedCategory === 'all'
+                      ? 'text-sky-300 border-sky-400/30 bg-sky-500/10'
+                      : 'border-slate-400/20 bg-white/5 text-slate-300 hover:bg-white/10'
+                  ]"
+                  @click="selectedCategory = 'all'"
+                >
+                  全部 ({{ files.length }})
+                </button>
+                <button
+                  v-for="(count, category) in categoryStats"
+                  :key="category"
+                  type="button"
+                  class="px-3 py-1.5 rounded-lg border text-xs transition-colors"
+                  :class="[
+                    selectedCategory === category
+                      ? 'text-sky-300 border-sky-400/30 bg-sky-500/10'
+                      : 'border-slate-400/20 bg-white/5 text-slate-300 hover:bg-white/10'
+                  ]"
+                  @click="selectedCategory = category"
+                >
+                  {{ categoryLabels[category] || category }} ({{ count }})
+                </button>
+              </div>
+            </div>
+
+            <!-- 收藏过滤 -->
+            <div class="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="showFavoritesOnly"
+                v-model="showFavoritesOnly"
+                class="w-4 h-4 rounded border-slate-400/50 bg-transparent text-sky-500 focus:ring-sky-500"
+              />
+              <label for="showFavoritesOnly" class="text-sm text-slate-300 flex items-center gap-2">
+                <Star :size="16" :class="showFavoritesOnly ? 'fill-amber-400 text-amber-400' : 'text-slate-400'" />
+                只显示收藏的文件
+              </label>
+            </div>
+
+            <!-- 清除过滤按钮 -->
+            <div class="flex justify-end">
+              <button
+                type="button"
+                class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-300 text-sm"
+                @click="clearFilters"
+              >
+                清除所有过滤
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 搜索结果提示 -->
+        <div
+          v-if="(searchQuery || selectedCategory !== 'all' || showFavoritesOnly) && filteredFiles.length !== files.length"
+          class="p-3 rounded-lg bg-sky-500/10 border border-sky-400/20 text-sky-200 text-sm flex items-center justify-between"
+        >
+          <span>
+            找到 <strong>{{ filteredFiles.length }}</strong> 个匹配的文件（共 {{ files.length }} 个）
+          </span>
           <button
             type="button"
-            class="rounded-lg border border-sky-400/30 px-4 py-2 text-sky-100 bg-sky-500/10 hover:bg-sky-500/20 transition-colors text-sm"
-            :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
-            @click="showHistory"
+            class="text-xs text-sky-300 hover:text-sky-200 underline"
+            @click="clearFilters"
           >
-            查看历史记录
+            清除过滤
           </button>
         </div>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div
-            v-for="(file, index) in files"
-            :key="`${file.path}-${index}`"
-            class="flex items-center gap-4 p-4 rounded-lg glass hover:bg-white/10 transition-colors group"
+        <!-- 无搜索结果提示 -->
+        <div
+          v-if="filteredFiles.length === 0 && (searchQuery || selectedCategory !== 'all' || showFavoritesOnly)"
+          class="p-8 rounded-lg glass border border-white/10 text-center"
+        >
+          <Search :size="48" class="mx-auto mb-4 text-slate-600" />
+          <p class="text-slate-300 text-lg">没有找到匹配的文件</p>
+          <p class="text-slate-500 text-sm mt-2">请尝试修改搜索条件或清除过滤</p>
+          <button
+            type="button"
+            class="mt-4 px-4 py-2 rounded-lg border border-sky-400/30 bg-sky-500/10 hover:bg-sky-500/20 transition-colors text-sky-100 text-sm"
+            @click="clearFilters"
           >
-            <div class="p-3 rounded-lg bg-slate-800 text-slate-400 group-hover:bg-slate-700 group-hover:text-slate-200 transition-colors">
-              <FileText :size="24" />
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2">
-                <p class="font-medium text-slate-200 truncate">{{ file.name }}</p>
-                <span :class="[
-                  'px-2 py-0.5 rounded-lg border text-xs shrink-0',
-                  categoryTone[file.category] || categoryTone.unknown
-                ]">
-                  {{ file.category }}
-                </span>
-              </div>
-              <p class="text-xs text-slate-500 font-mono truncate">{{ file.path }}</p>
-              <p class="text-xs text-slate-500 font-mono uppercase">{{ file.extension || 'UNKNOWN' }} · {{ formatBytes(file.size) }}</p>
-            </div>
-            <button
-              type="button"
-              class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors disabled:opacity-50"
-              :disabled="isGeneratingPlan || isExecutingPlan"
-              @click="previewFile(file)"
-              title="预览文件"
+            清除所有过滤
+          </button>
+        </div>
+
+        <!-- 文件列表视图 -->
+        <template v-else-if="viewMode === 'list'">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div
+              v-for="(file, index) in filteredFiles"
+              :key="`${file.path}-${index}`"
+              class="flex items-center gap-4 p-4 rounded-lg glass hover:bg-white/10 transition-colors group"
             >
-              <Eye :size="18" class="text-slate-300" />
-            </button>
+              <div class="p-3 rounded-lg bg-slate-800 text-slate-400 group-hover:bg-slate-700 group-hover:text-slate-200 transition-colors">
+                <FileText :size="24" />
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2">
+                  <p class="font-medium text-slate-200 truncate">{{ file.name }}</p>
+                  <span :class="[
+                    'px-2 py-0.5 rounded-lg border text-xs shrink-0',
+                    categoryTone[file.category] || categoryTone.unknown
+                  ]">
+                    {{ file.category }}
+                  </span>
+                  <Star
+                    v-if="favoriteFiles.has(file.path)"
+                    :size="14"
+                    class="fill-amber-400 text-amber-400"
+                    title="已收藏"
+                  />
+                </div>
+                <p class="text-xs text-slate-500 font-mono truncate">{{ file.path }}</p>
+                <p class="text-xs text-slate-500 font-mono uppercase">{{ file.extension || 'UNKNOWN' }} · {{ formatBytes(file.size) }}</p>
+              </div>
+              <div class="flex items-center gap-1">
+                <button
+                  type="button"
+                  class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                  @click="toggleFavorite(file)"
+                  :title="favoriteFiles.has(file.path) ? '取消收藏' : '添加收藏'"
+                >
+                  <Star
+                    :size="18"
+                    :class="[
+                      'transition-colors',
+                      favoriteFiles.has(file.path) ? 'fill-amber-400 text-amber-400' : 'text-slate-400 hover:text-slate-300'
+                    ]"
+                  />
+                </button>
+                <button
+                  type="button"
+                  class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors disabled:opacity-50"
+                  :disabled="isGeneratingPlan || isExecutingPlan"
+                  @click="previewFile(file)"
+                  title="预览文件"
+                >
+                  <Eye :size="18" class="text-slate-300" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- 时间线/分组视图 -->
+        <template v-else-if="viewMode === 'timeline'">
+          <div class="space-y-6">
+            <div
+              v-for="(group, groupIndex) in timelineGroups"
+              :key="group.name"
+              class="space-y-3"
+            >
+              <!-- 分组标题 -->
+              <div class="flex items-center gap-3">
+                <div class="flex-1 h-px bg-white/10"></div>
+                <div class="flex items-center gap-2 px-4 py-1.5 rounded-full bg-slate-800 border border-white/10">
+                  <FileText :size="16" class="text-sky-400" />
+                  <span class="text-sm text-slate-200 font-medium">{{ group.name }}</span>
+                  <span class="text-xs text-slate-500">{{ group.count }} 个文件 · {{ formatBytes(group.totalSize) }}</span>
+                </div>
+                <div class="flex-1 h-px bg-white/10"></div>
+              </div>
+
+              <!-- 分组内的文件列表 -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div
+                  v-for="(file, fileIndex) in group.files"
+                  :key="`${group.name}-${file.path}`"
+                  class="flex items-center gap-3 p-3 rounded-lg bg-slate-900/50 border border-white/5 hover:bg-slate-800/50 hover:border-white/10 transition-all group"
+                >
+                  <div class="p-2 rounded-lg bg-slate-800 text-slate-500 group-hover:bg-slate-700 group-hover:text-slate-300 transition-colors">
+                    <FileText :size="20" />
+                  </div>
+                  <div class="flex-1 min-w-0">
+                    <div class="flex items-center gap-2">
+                      <p class="text-sm font-medium text-slate-200 truncate">{{ file.name }}</p>
+                      <Star
+                        v-if="favoriteFiles.has(file.path)"
+                        :size="12"
+                        class="fill-amber-400 text-amber-400"
+                      />
+                    </div>
+                    <p class="text-xs text-slate-500 font-mono truncate">{{ file.path }}</p>
+                  </div>
+                  <div class="flex items-center gap-2 text-xs text-slate-500 font-mono">
+                    <span>{{ formatBytes(file.size) }}</span>
+                    <div class="flex items-center gap-1">
+                      <button
+                        type="button"
+                        class="p-1.5 rounded hover:bg-white/10 transition-colors"
+                        @click="toggleFavorite(file)"
+                        :title="favoriteFiles.has(file.path) ? '取消收藏' : '添加收藏'"
+                      >
+                        <Star
+                          :size="14"
+                          :class="[
+                            favoriteFiles.has(file.path) ? 'fill-amber-400 text-amber-400' : 'text-slate-500 hover:text-slate-400'
+                          ]"
+                        />
+                      </button>
+                      <button
+                        type="button"
+                        class="p-1.5 rounded hover:bg-white/10 transition-colors disabled:opacity-50"
+                        :disabled="isGeneratingPlan || isExecutingPlan"
+                        @click="previewFile(file)"
+                        title="预览文件"
+                      >
+                        <Eye :size="14" class="text-slate-400" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </template>
+
+        <!-- 文件夹大小分析摘要 -->
+        <div class="p-4 rounded-lg glass border border-white/10">
+          <h3 class="text-lg font-semibold text-slate-200 mb-4 flex items-center gap-2">
+            <HardDrive :size="20" class="text-sky-400" />
+            文件夹分析摘要
+          </h3>
+          
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <!-- 总文件数和大小 -->
+            <div class="p-4 rounded-lg bg-slate-900/50 border border-white/5">
+              <p class="text-sm text-slate-500 mb-1">总文件数</p>
+              <p class="text-2xl font-bold text-slate-200">{{ folderAnalysis.totalFiles }}</p>
+              <p class="text-sm text-slate-400 mt-1">总大小：{{ formatBytes(folderAnalysis.totalSize) }}</p>
+            </div>
+
+            <!-- 最大的文件 -->
+            <div class="p-4 rounded-lg bg-slate-900/50 border border-white/5">
+              <p class="text-sm text-slate-500 mb-1">最大文件</p>
+              <template v-if="folderAnalysis.largestFiles.length > 0">
+                <p class="text-sm font-medium text-slate-200 truncate">
+                  {{ folderAnalysis.largestFiles[0].name }}
+                </p>
+                <p class="text-sm text-slate-400 mt-1">
+                  {{ formatBytes(folderAnalysis.largestFiles[0].size) }}
+                </p>
+              </template>
+              <template v-else>
+                <p class="text-slate-400">—</p>
+              </template>
+            </div>
+
+            <!-- 收藏文件数 -->
+            <div class="p-4 rounded-lg bg-slate-900/50 border border-white/5">
+              <p class="text-sm text-slate-500 mb-1">收藏文件</p>
+              <p class="text-2xl font-bold text-amber-400 flex items-center gap-2">
+                <Star :size="24" class="fill-amber-400" />
+                {{ favoriteFiles.size }}
+              </p>
+              <button
+                v-if="favoriteFiles.size > 0"
+                type="button"
+                class="text-xs text-amber-400 hover:text-amber-300 mt-1"
+                @click="showFavoritesOnly = true"
+              >
+                点击查看收藏
+              </button>
+            </div>
           </div>
         </div>
       </section>
