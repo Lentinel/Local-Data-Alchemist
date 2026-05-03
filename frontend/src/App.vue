@@ -127,6 +127,14 @@ const multiError = ref(null)
 const newMultiTargetPath = ref('')
 const isMultiMode = ref(false)
 
+// 计划预览和二次确认
+const isShowingPlanPreview = ref(false)
+const isLoadingPreview = ref(false)
+const planPreviewData = ref(null)
+const planPreviewError = ref(null)
+const needFinalConfirmation = ref(false)
+const finalConfirmChecked = ref(false)
+
 const CATEGORY_COLORS = {
   images: '#10b981',
   documents: '#3b82f6',
@@ -580,10 +588,74 @@ const generateAlchemyPlan = async () => {
   }
 }
 
+const loadPlanPreview = async () => {
+  if (!targetPath.value || !actionPlan.value || actionPlan.value.length === 0) {
+    return false
+  }
+
+  isLoadingPreview.value = true
+  planPreviewError.value = null
+
+  try {
+    addLog('[安全] 正在执行计划预检查...', 'info')
+
+    const response = await axios.post('/api/preview_plan', {
+      target_path: targetPath.value,
+      plan: actionPlan.value,
+    })
+
+    planPreviewData.value = response.data
+    isShowingPlanPreview.value = true
+
+    const safetyLevel = response.data.safety_level
+    const safetyReasons = response.data.safety_reasons || []
+
+    if (safetyLevel === 'danger') {
+      addLog(`[安全警告] 检测到危险操作: ${safetyReasons.join(', ')}`, 'warning')
+      needFinalConfirmation.value = true
+    } else if (safetyLevel === 'warning') {
+      addLog(`[安全提示] ${safetyReasons.join(', ')}`, 'info')
+      needFinalConfirmation.value = response.data.delete_count > 0
+    } else {
+      needFinalConfirmation.value = false
+    }
+
+    return true
+  } catch (err) {
+    planPreviewError.value = err.response?.data?.detail || '计划预检查失败'
+    addLog(`[错误] 计划预检查失败: ${planPreviewError.value}`, 'error')
+    console.error('Preview plan error:', err)
+    return false
+  } finally {
+    isLoadingPreview.value = false
+  }
+}
+
 const approveAndExecute = async () => {
   if (!targetPath.value || actionPlan.value.length === 0) {
     return
   }
+
+  const previewSuccess = await loadPlanPreview()
+  
+  if (!previewSuccess) {
+    addLog('[安全] 计划预检查失败，中止执行', 'error')
+    return
+  }
+}
+
+const executePlanDirectly = async () => {
+  if (!targetPath.value || actionPlan.value.length === 0) {
+    return
+  }
+
+  if (needFinalConfirmation.value && !finalConfirmChecked.value) {
+    addLog('[安全] 请确认已知晓操作风险后再执行', 'warning')
+    return
+  }
+
+  isShowingPlanPreview.value = false
+  finalConfirmChecked.value = false
 
   error.value = null
   executionResult.value = null
@@ -611,6 +683,38 @@ const approveAndExecute = async () => {
     console.error('Execute plan error:', err)
   } finally {
     isExecutingPlan.value = false
+    planPreviewData.value = null
+    needFinalConfirmation.value = false
+  }
+}
+
+const cancelPlanPreview = () => {
+  isShowingPlanPreview.value = false
+  planPreviewData.value = null
+  planPreviewError.value = null
+  needFinalConfirmation.value = false
+  finalConfirmChecked.value = false
+}
+
+const getSafetyLevelClass = (level) => {
+  switch (level) {
+    case 'danger':
+      return 'text-red-400 bg-red-500/10 border-red-400/20'
+    case 'warning':
+      return 'text-amber-400 bg-amber-500/10 border-amber-400/20'
+    default:
+      return 'text-emerald-400 bg-emerald-500/10 border-emerald-400/20'
+  }
+}
+
+const getSafetyLevelLabel = (level) => {
+  switch (level) {
+    case 'danger':
+      return '高风险'
+    case 'warning':
+      return '中风险'
+    default:
+      return '安全'
   }
 }
 
@@ -3948,6 +4052,252 @@ const getHistoryTypeLabels = (type) => {
                     </div>
                   </div>
                 </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 计划预览和二次确认弹窗 -->
+      <div v-if="isShowingPlanPreview && planPreviewData" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div class="relative w-full max-w-4xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
+          <!-- 弹窗头部 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10">
+            <div class="flex items-center gap-3">
+              <div class="p-2 rounded-lg" :class="planPreviewData.safety_level === 'danger' ? 'bg-red-500/10' : planPreviewData.safety_level === 'warning' ? 'bg-amber-500/10' : 'bg-emerald-500/10'">
+                <Shield :size="24" :class="planPreviewData.safety_level === 'danger' ? 'text-red-400' : planPreviewData.safety_level === 'warning' ? 'text-amber-400' : 'text-emerald-400'" />
+              </div>
+              <div>
+                <p class="font-medium text-slate-100">执行计划预览</p>
+                <p class="text-xs text-slate-400 font-mono">
+                  共 {{ planPreviewData.summary?.total_actions || 0 }} 条操作 · 
+                  <span :class="getSafetyLevelClass(planPreviewData.safety_level)" class="inline-flex px-2 py-0.5 rounded border text-xs ml-1">
+                    {{ getSafetyLevelLabel(planPreviewData.safety_level) }}
+                  </span>
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+              @click="cancelPlanPreview"
+              title="取消"
+            >
+              <X :size="20" class="text-slate-300" />
+            </button>
+          </div>
+
+          <!-- 弹窗内容 -->
+          <div class="flex-1 overflow-auto p-4">
+            <!-- 安全警告区域 -->
+            <div v-if="planPreviewData.safety_reasons && planPreviewData.safety_reasons.length > 0"
+              class="mb-4 p-4 rounded-lg border"
+              :class="planPreviewData.safety_level === 'danger' ? 'bg-red-500/10 border-red-400/20' : 'bg-amber-500/10 border-amber-400/20'"
+            >
+              <div class="flex items-start gap-3">
+                <AlertTriangle :size="18" :class="planPreviewData.safety_level === 'danger' ? 'text-red-400' : 'text-amber-400'" />
+                <div>
+                  <p class="text-sm font-medium" :class="planPreviewData.safety_level === 'danger' ? 'text-red-300' : 'text-amber-300'">
+                    安全提示
+                  </p>
+                  <ul class="mt-2 space-y-1">
+                    <li v-for="(reason, index) in planPreviewData.safety_reasons" :key="index" class="text-xs" :class="planPreviewData.safety_level === 'danger' ? 'text-red-200' : 'text-amber-200'">
+                      ⚠️ {{ reason }}
+                    </li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+
+            <!-- 操作摘要 -->
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              <div class="p-3 rounded-lg bg-slate-950/70 border border-white/10">
+                <p class="text-xs text-slate-400">移动/重命名</p>
+                <p class="text-xl font-bold text-sky-400">{{ planPreviewData.summary?.move_count || 0 }}</p>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-950/70 border border-white/10">
+                <p class="text-xs text-slate-400">删除</p>
+                <p class="text-xl font-bold text-red-400">{{ planPreviewData.summary?.delete_count || 0 }}</p>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-950/70 border border-white/10">
+                <p class="text-xs text-slate-400">保留</p>
+                <p class="text-xl font-bold text-slate-300">{{ planPreviewData.summary?.keep_count || 0 }}</p>
+              </div>
+              <div class="p-3 rounded-lg bg-slate-950/70 border border-white/10">
+                <p class="text-xs text-slate-400">新建文件夹</p>
+                <p class="text-xl font-bold text-emerald-400">{{ planPreviewData.summary?.new_folders_count || 0 }}</p>
+              </div>
+            </div>
+
+            <!-- 冲突列表 -->
+            <div v-if="planPreviewData.conflicts && planPreviewData.conflicts.length > 0" class="mb-4">
+              <h4 class="text-sm font-medium text-red-400 mb-2 flex items-center gap-2">
+                <AlertTriangle :size="16" />
+                检测到 {{ planPreviewData.conflicts.length }} 个冲突
+              </h4>
+              <div class="space-y-2 max-h-32 overflow-auto">
+                <div v-for="(conflict, index) in planPreviewData.conflicts" :key="index" class="p-3 rounded-lg bg-red-500/5 border border-red-400/20">
+                  <p class="text-xs text-slate-200">
+                    <span class="text-red-400 font-medium">{{ conflict.type === 'target_exists' ? '目标文件已存在:' : '目标冲突:' }}</span>
+                  </p>
+                  <p class="text-xs text-slate-400 font-mono mt-1">
+                    {{ conflict.source }} → {{ conflict.target }}
+                    <span v-if="conflict.other_source" class="text-red-400 ml-2">
+                      (同时被 {{ conflict.other_source }} 占用)
+                    </span>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- 警告列表 -->
+            <div v-if="planPreviewData.warnings && planPreviewData.warnings.length > 0" class="mb-4">
+              <h4 class="text-sm font-medium text-amber-400 mb-2 flex items-center gap-2">
+                <AlertCircle :size="16" />
+                警告 ({{ planPreviewData.warnings.length }})
+              </h4>
+              <div class="space-y-2 max-h-24 overflow-auto">
+                <div v-for="(warning, index) in planPreviewData.warnings" :key="index" class="p-2 rounded-lg bg-amber-500/5 border border-amber-400/20">
+                  <p class="text-xs text-slate-200">
+                    <span class="text-slate-400">{{ warning.file }}:</span>
+                    <span class="text-amber-400 ml-1">{{ warning.message }}</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <!-- 操作详细列表 -->
+            <div class="space-y-4">
+              <!-- 移动操作列表 -->
+              <div v-if="planPreviewData.move_actions && planPreviewData.move_actions.length > 0">
+                <h4 class="text-sm font-medium text-slate-200 mb-2 flex items-center gap-2">
+                  <ArrowRight :size="16" class="text-sky-400" />
+                  移动/重命名操作 ({{ planPreviewData.move_actions.length }})
+                </h4>
+                <div class="space-y-1 max-h-40 overflow-auto">
+                  <div
+                    v-for="(action, index) in planPreviewData.move_actions"
+                    :key="index"
+                    class="flex items-center justify-between p-2 rounded-lg bg-slate-950/50 border border-white/5"
+                  >
+                    <div class="flex items-center gap-2 min-w-0 flex-1">
+                      <FileText :size="14" class="text-slate-400 flex-shrink-0" />
+                      <div class="min-w-0">
+                        <p class="text-xs text-slate-200 truncate">{{ action.source_name }}</p>
+                        <p class="text-xs text-sky-400 truncate flex items-center gap-1">
+                          <ArrowRight :size="10" />
+                          {{ action.target_name }}
+                        </p>
+                      </div>
+                    </div>
+                    <div v-if="!action.source_exists" class="flex-shrink-0 ml-2">
+                      <span class="px-1.5 py-0.5 rounded text-xs bg-amber-500/10 text-amber-400 border border-amber-400/20">
+                        不存在
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 删除操作列表 -->
+              <div v-if="planPreviewData.delete_actions && planPreviewData.delete_actions.length > 0">
+                <h4 class="text-sm font-medium text-slate-200 mb-2 flex items-center gap-2">
+                  <Trash2 :size="16" class="text-red-400" />
+                  删除操作 ({{ planPreviewData.delete_actions.length }})
+                </h4>
+                <div class="space-y-1 max-h-32 overflow-auto">
+                  <div
+                    v-for="(action, index) in planPreviewData.delete_actions"
+                    :key="index"
+                    class="flex items-center justify-between p-2 rounded-lg bg-red-500/5 border border-red-400/20"
+                  >
+                    <div class="flex items-center gap-2 min-w-0">
+                      <FileText :size="14" class="text-red-400 flex-shrink-0" />
+                      <p class="text-xs text-slate-200 truncate">{{ action.file_name }}</p>
+                    </div>
+                    <div v-if="!action.source_exists" class="flex-shrink-0 ml-2">
+                      <span class="px-1.5 py-0.5 rounded text-xs bg-amber-500/10 text-amber-400 border border-amber-400/20">
+                        不存在
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 保留操作列表 -->
+              <div v-if="planPreviewData.keep_actions && planPreviewData.keep_actions.length > 0">
+                <h4 class="text-sm font-medium text-slate-200 mb-2 flex items-center gap-2">
+                  <Check :size="16" class="text-slate-400" />
+                  保留操作 ({{ planPreviewData.keep_actions.length }})
+                </h4>
+                <div class="space-y-1 max-h-24 overflow-auto">
+                  <div
+                    v-for="(action, index) in planPreviewData.keep_actions"
+                    :key="index"
+                    class="flex items-center gap-2 p-2 rounded-lg bg-slate-950/50 border border-white/5"
+                  >
+                    <FileText :size="14" class="text-slate-400" />
+                    <p class="text-xs text-slate-200 truncate">{{ action.file_name }}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 弹窗底部 -->
+          <div class="p-4 border-t border-white/10">
+            <!-- 最终确认复选框 -->
+            <div v-if="needFinalConfirmation" class="mb-4 p-3 rounded-lg bg-red-500/5 border border-red-400/20">
+              <label class="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="checkbox"
+                  v-model="finalConfirmChecked"
+                  class="mt-0.5 w-4 h-4 rounded border-slate-500 bg-slate-800 text-red-500 focus:ring-red-500"
+                />
+                <div>
+                  <p class="text-sm text-red-300 font-medium">我已知晓操作风险</p>
+                  <p class="text-xs text-slate-400 mt-1">
+                    我理解此操作将修改/删除文件，虽然可以通过"时光倒流"回滚，但仍需谨慎操作。
+                  </p>
+                </div>
+              </label>
+            </div>
+
+            <div class="flex items-center justify-between">
+              <div class="text-xs text-slate-500 font-mono">
+                <template v-if="planPreviewData.has_conflicts">
+                  <span class="text-red-400">⚠️ 存在冲突，建议先解决冲突再执行</span>
+                </template>
+                <template v-else-if="planPreviewData.has_warnings">
+                  <span class="text-amber-400">⚠️ 存在警告，部分源文件可能不存在</span>
+                </template>
+                <template v-else>
+                  ✓ 计划检查通过，可以安全执行
+                </template>
+              </div>
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+                  @click="cancelPlanPreview"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  class="px-4 py-2 rounded-lg border transition-colors text-sm"
+                  :class="[
+                    needFinalConfirmation && !finalConfirmChecked
+                      ? 'border-slate-400/20 bg-slate-500/20 text-slate-500 cursor-not-allowed'
+                      : planPreviewData.has_conflicts
+                        ? 'border-red-400/30 bg-red-500/10 hover:bg-red-500/20 text-red-100'
+                        : 'border-emerald-400/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-100'
+                  ]"
+                  :disabled="needFinalConfirmation && !finalConfirmChecked"
+                  @click="executePlanDirectly"
+                >
+                  {{ planPreviewData.has_conflicts ? '强制执行' : '确认执行' }}
+                </button>
               </div>
             </div>
           </div>

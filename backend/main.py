@@ -255,6 +255,153 @@ class MultiExecuteRequest(BaseModel):
     targets: list[dict]
 
 
+class PreviewPlanRequest(BaseModel):
+    target_path: str
+    plan: list[ActionPlanItem]
+
+
+def preview_plan_impl(
+    target_dir: Path,
+    plan: list[ActionPlanItem]
+) -> dict:
+    summary = {
+        "total_actions": len(plan),
+        "by_action": {},
+        "move_actions": [],
+        "delete_actions": [],
+        "keep_actions": [],
+        "conflicts": [],
+        "warnings": [],
+        "new_folders": set(),
+    }
+
+    target_paths_map = {}
+    source_paths_map = {}
+
+    for i, item in enumerate(plan):
+        action = item.action
+        source_file = item.file
+
+        if action not in summary["by_action"]:
+            summary["by_action"][action] = 0
+        summary["by_action"][action] += 1
+
+        source_path = resolve_inside_target(target_dir, source_file)
+        source_exists = source_path.exists()
+
+        if not source_exists:
+            summary["warnings"].append({
+                "index": i,
+                "action": action,
+                "file": source_file,
+                "message": "源文件不存在"
+            })
+
+        if action in {"move", "rename_and_move"}:
+            target_file = item.target_path
+            target_path = resolve_inside_target(target_dir, target_file)
+            
+            summary["move_actions"].append({
+                "index": i,
+                "source": source_file,
+                "source_name": Path(source_file).name,
+                "target": target_file,
+                "target_name": Path(target_file).name,
+                "source_exists": source_exists,
+            })
+
+            target_parent = Path(target_file).parent
+            if str(target_parent) != "." and str(target_parent) != "":
+                summary["new_folders"].add(str(target_parent))
+
+            if target_path.exists() and target_path != source_path:
+                summary["conflicts"].append({
+                    "index": i,
+                    "type": "target_exists",
+                    "source": source_file,
+                    "target": target_file,
+                    "message": "目标路径已存在"
+                })
+
+            normalized_target = str(target_path.resolve())
+            if normalized_target in target_paths_map:
+                summary["conflicts"].append({
+                    "index": i,
+                    "type": "duplicate_target",
+                    "source": source_file,
+                    "target": target_file,
+                    "other_source": target_paths_map[normalized_target]["source"],
+                    "message": "多个文件将移动到同一个目标"
+                })
+            target_paths_map[normalized_target] = {
+                "source": source_file,
+                "target": target_file,
+                "index": i,
+            }
+
+        elif action == "delete":
+            summary["delete_actions"].append({
+                "index": i,
+                "file": source_file,
+                "file_name": Path(source_file).name,
+                "source_exists": source_exists,
+            })
+
+        elif action == "keep":
+            summary["keep_actions"].append({
+                "index": i,
+                "file": source_file,
+                "file_name": Path(source_file).name,
+                "source_exists": source_exists,
+            })
+
+    move_count = len(summary["move_actions"])
+    delete_count = len(summary["delete_actions"])
+    keep_count = len(summary["keep_actions"])
+
+    has_conflicts = len(summary["conflicts"]) > 0
+    has_warnings = len(summary["warnings"]) > 0
+    needs_confirmation = has_conflicts or delete_count > 0
+
+    safety_level = "safe"
+    safety_reasons = []
+
+    if has_conflicts:
+        safety_level = "danger"
+        safety_reasons.append(f"检测到 {len(summary['conflicts'])} 个冲突")
+    
+    if delete_count > 0:
+        safety_level = "warning" if safety_level == "safe" else safety_level
+        safety_reasons.append(f"将删除 {delete_count} 个文件")
+    
+    if move_count > 10:
+        safety_level = "warning" if safety_level == "safe" else safety_level
+        safety_reasons.append(f"涉及 {move_count} 个文件操作")
+
+    return {
+        "status": "success",
+        "summary": {
+            "total_actions": summary["total_actions"],
+            "move_count": move_count,
+            "delete_count": delete_count,
+            "keep_count": keep_count,
+            "by_action": summary["by_action"],
+            "new_folders_count": len(summary["new_folders"]),
+            "new_folders": list(summary["new_folders"]),
+        },
+        "conflicts": summary["conflicts"],
+        "warnings": summary["warnings"],
+        "move_actions": summary["move_actions"],
+        "delete_actions": summary["delete_actions"],
+        "keep_actions": summary["keep_actions"],
+        "safety_level": safety_level,
+        "safety_reasons": safety_reasons,
+        "has_conflicts": has_conflicts,
+        "has_warnings": has_warnings,
+        "needs_confirmation": needs_confirmation,
+    }
+
+
 def get_file_modification_time(file_path: Path) -> date | None:
     try:
         timestamp = file_path.stat().st_mtime
@@ -2777,6 +2924,28 @@ async def api_dashboard_stats(request: DashboardStatsRequest):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"生成仪表盘统计失败：{str(exc)}") from exc
+
+
+@app.post("/preview_plan")
+@app.post("/api/preview_plan")
+async def api_preview_plan(request: PreviewPlanRequest):
+    try:
+        if not request.target_path:
+            raise HTTPException(status_code=400, detail="缺少目标目录")
+        
+        if not request.plan or len(request.plan) == 0:
+            raise HTTPException(status_code=400, detail="计划为空")
+        
+        target_dir = get_target_dir(request.target_path)
+        
+        result = preview_plan_impl(target_dir, request.plan)
+        
+        return result
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"计划预检查失败：{str(exc)}") from exc
 
 
 @app.post("/multi_scan")
