@@ -131,7 +131,7 @@ const isMultiMode = ref(false)
 const isShowingPlanPreview = ref(false)
 const isLoadingPreview = ref(false)
 const planPreviewData = ref(null)
-const planPreviewError = ref(null)
+const previewError = ref(null)
 const needFinalConfirmation = ref(false)
 const finalConfirmChecked = ref(false)
 
@@ -594,7 +594,7 @@ const loadPlanPreview = async () => {
   }
 
   isLoadingPreview.value = true
-  planPreviewError.value = null
+  previewError.value = null
 
   try {
     addLog('[安全] 正在执行计划预检查...', 'info')
@@ -622,8 +622,8 @@ const loadPlanPreview = async () => {
 
     return true
   } catch (err) {
-    planPreviewError.value = err.response?.data?.detail || '计划预检查失败'
-    addLog(`[错误] 计划预检查失败: ${planPreviewError.value}`, 'error')
+    previewError.value = err.response?.data?.detail || '计划预检查失败'
+    addLog(`[错误] 计划预检查失败: ${previewError.value}`, 'error')
     console.error('Preview plan error:', err)
     return false
   } finally {
@@ -691,7 +691,7 @@ const executePlanDirectly = async () => {
 const cancelPlanPreview = () => {
   isShowingPlanPreview.value = false
   planPreviewData.value = null
-  planPreviewError.value = null
+  previewError.value = null
   needFinalConfirmation.value = false
   finalConfirmChecked.value = false
 }
