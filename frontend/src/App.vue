@@ -1256,9 +1256,9 @@ const detectDuplicates = async () => {
     if (response.data.status === 'success') {
       duplicateGroups.value = response.data.duplicate_groups || []
       
-      duplicateGroups.value.forEach((group, index) => {
-        if (group.files && group.files.length > 0) {
-          selectedKeepFiles.value[index] = group.files[0].path
+      duplicateGroups.value.forEach((group) => {
+        if (group.files && group.files.length > 0 && group.hash) {
+          selectedKeepFiles.value[group.hash] = group.files[0].path
         }
       })
 
@@ -1294,22 +1294,22 @@ const hideDuplicates = () => {
   duplicateResult.value = null
 }
 
-const selectKeepFile = (groupIndex, filePath) => {
-  selectedKeepFiles.value[groupIndex] = filePath
+const selectKeepFile = (groupHash, filePath) => {
+  selectedKeepFiles.value[groupHash] = filePath
 }
 
-const processKeepSelected = async (groupIndex) => {
+const processKeepSelected = async (groupHash) => {
   if (!targetPath.value) {
     duplicateError.value = '无法处理：缺少目标目录'
     return
   }
 
-  const group = duplicateGroups.value[groupIndex]
+  const group = duplicateGroups.value.find(g => g.hash === groupHash)
   if (!group || !group.files) {
     return
   }
 
-  const keepFile = selectedKeepFiles.value[groupIndex]
+  const keepFile = selectedKeepFiles.value[groupHash]
   if (!keepFile) {
     duplicateError.value = '请先选择要保留的文件'
     return
@@ -1339,8 +1339,8 @@ const processKeepSelected = async (groupIndex) => {
       duplicateResult.value = response.data
       addLog(`[系统] 处理完成：已删除 ${response.data.deleted_count} 个重复文件`, 'info')
       
-      duplicateGroups.value = duplicateGroups.value.filter((_, idx) => idx !== groupIndex)
-      delete selectedKeepFiles.value[groupIndex]
+      duplicateGroups.value = duplicateGroups.value.filter(g => g.hash !== groupHash)
+      delete selectedKeepFiles.value[groupHash]
       
       files.value = files.value.filter(f => f.path !== keepFile || !duplicateFiles.includes(f.path))
     } else {
@@ -1361,10 +1361,13 @@ const processAllDuplicates = async () => {
     return
   }
 
-  for (let i = duplicateGroups.value.length - 1; i >= 0; i--) {
-    if (selectedKeepFiles.value[i]) {
-      await processKeepSelected(i)
-    }
+  const groupsToProcess = duplicateGroups.value
+    .filter(g => selectedKeepFiles.value[g.hash])
+    .map(g => g.hash)
+
+  for (const groupHash of groupsToProcess) {
+    await processKeepSelected(groupHash)
+    await nextTick()
   }
 }
 
@@ -5159,7 +5162,7 @@ const getHistoryTypeLabels = (type) => {
                     type="button"
                     class="px-3 py-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 hover:bg-amber-500/20 transition-colors text-amber-100 text-xs"
                     :disabled="isProcessingDuplicates"
-                    @click="processKeepSelected(groupIndex)"
+                    @click="processKeepSelected(group.hash)"
                   >
                     处理此组
                   </button>
@@ -5177,22 +5180,22 @@ const getHistoryTypeLabels = (type) => {
                     :key="file.path"
                     class="flex items-center gap-3 p-3 rounded-lg transition-colors cursor-pointer"
                     :class="[
-                      selectedKeepFiles[groupIndex] === file.path
+                      selectedKeepFiles[group.hash] === file.path
                         ? 'bg-emerald-500/10 border border-emerald-400/20'
                         : 'bg-slate-900/50 border border-white/5 hover:bg-slate-800/50'
                     ]"
-                    @click="selectKeepFile(groupIndex, file.path)"
+                    @click="selectKeepFile(group.hash, file.path)"
                   >
                     <!-- 选择标记 -->
                     <div class="flex items-center justify-center w-6 h-6 rounded-full border"
                       :class="[
-                        selectedKeepFiles[groupIndex] === file.path
+                        selectedKeepFiles[group.hash] === file.path
                           ? 'border-emerald-400 bg-emerald-500/20'
                           : 'border-slate-600'
                       ]"
                     >
                       <CheckCircle
-                        v-if="selectedKeepFiles[groupIndex] === file.path"
+                        v-if="selectedKeepFiles[group.hash] === file.path"
                         :size="14"
                         class="text-emerald-400"
                       />
@@ -5206,7 +5209,7 @@ const getHistoryTypeLabels = (type) => {
                     <div class="flex-1 min-w-0">
                       <div class="flex items-center gap-2">
                         <p class="font-medium text-slate-200 truncate">{{ file.name }}</p>
-                        <span v-if="selectedKeepFiles[groupIndex] === file.path"
+                        <span v-if="selectedKeepFiles[group.hash] === file.path"
                           class="px-2 py-0.5 rounded-full text-xs font-semibold text-emerald-300 bg-emerald-500/10"
                         >
                           保留
