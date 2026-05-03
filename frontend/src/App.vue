@@ -61,6 +61,15 @@ const favoriteFiles = ref(new Set())
 const showFavoritesOnly = ref(false)
 const isLoadingFavorites = ref(false)
 
+// 文件去重功能
+const isDetectingDuplicates = ref(false)
+const isShowingDuplicates = ref(false)
+const isProcessingDuplicates = ref(false)
+const duplicateGroups = ref([])
+const selectedKeepFiles = ref({})
+const duplicateError = ref(null)
+const duplicateResult = ref(null)
+
 const categoryTone = {
   logs: 'text-amber-300 bg-amber-500/10 border-amber-400/20',
   images: 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20',
@@ -824,6 +833,155 @@ const toggleViewMode = () => {
   viewMode.value = viewMode.value === 'list' ? 'timeline' : 'list'
   addLog(`[系统] 已切换到${viewMode.value === 'list' ? '列表视图' : '时间线视图'}`, 'info')
 }
+
+// 文件去重功能计算属性
+const hasDuplicates = computed(() => duplicateGroups.value.length > 0)
+
+const totalDuplicateSize = computed(() => {
+  return duplicateGroups.value.reduce((total, group) => {
+    return total + (group.size * (group.files.length - 1))
+  }, 0)
+})
+
+const totalDuplicateCount = computed(() => {
+  return duplicateGroups.value.reduce((total, group) => {
+    return total + (group.files.length - 1)
+  }, 0)
+})
+
+// 文件去重功能方法
+const detectDuplicates = async () => {
+  if (!targetPath.value) {
+    duplicateError.value = '无法检测重复文件：缺少目标目录'
+    return
+  }
+
+  isDetectingDuplicates.value = true
+  duplicateError.value = null
+  duplicateGroups.value = []
+  selectedKeepFiles.value = {}
+
+  try {
+    addLog('[系统] 正在检测重复文件...', 'info')
+    const response = await axios.post('/api/detect_duplicates', {
+      target_path: targetPath.value,
+      fast_mode: true
+    })
+
+    if (response.data.status === 'success') {
+      duplicateGroups.value = response.data.duplicate_groups || []
+      
+      duplicateGroups.value.forEach((group, index) => {
+        if (group.files && group.files.length > 0) {
+          selectedKeepFiles.value[index] = group.files[0].path
+        }
+      })
+
+      if (duplicateGroups.value.length > 0) {
+        addLog(`[系统] 检测完成，发现 ${duplicateGroups.value.length} 组重复文件，共 ${totalDuplicateCount.value} 个冗余文件`, 'info')
+        addLog(`[系统] 可释放空间：${formatBytes(totalDuplicateSize.value)}`, 'info')
+      } else {
+        addLog('[系统] 检测完成，未发现重复文件', 'info')
+      }
+    } else {
+      duplicateError.value = '检测重复文件失败：服务器返回错误状态'
+      addLog(`[错误] 重复文件检测失败: ${duplicateError.value}`, 'error')
+    }
+  } catch (err) {
+    duplicateError.value = err.response?.data?.detail || '检测重复文件失败，请稍后再试'
+    addLog(`[错误] 重复文件检测失败: ${duplicateError.value}`, 'error')
+    console.error('Detect duplicates error:', err)
+  } finally {
+    isDetectingDuplicates.value = false
+  }
+}
+
+const showDuplicates = async () => {
+  isShowingDuplicates.value = true
+  duplicateError.value = null
+  duplicateResult.value = null
+  await detectDuplicates()
+}
+
+const hideDuplicates = () => {
+  isShowingDuplicates.value = false
+  duplicateError.value = null
+  duplicateResult.value = null
+}
+
+const selectKeepFile = (groupIndex, filePath) => {
+  selectedKeepFiles.value[groupIndex] = filePath
+}
+
+const processKeepSelected = async (groupIndex) => {
+  if (!targetPath.value) {
+    duplicateError.value = '无法处理：缺少目标目录'
+    return
+  }
+
+  const group = duplicateGroups.value[groupIndex]
+  if (!group || !group.files) {
+    return
+  }
+
+  const keepFile = selectedKeepFiles.value[groupIndex]
+  if (!keepFile) {
+    duplicateError.value = '请先选择要保留的文件'
+    return
+  }
+
+  const duplicateFiles = group.files
+    .filter(f => f.path !== keepFile)
+    .map(f => f.path)
+
+  if (duplicateFiles.length === 0) {
+    return
+  }
+
+  isProcessingDuplicates.value = true
+  duplicateError.value = null
+
+  try {
+    addLog(`[系统] 正在处理重复文件：保留 ${keepFile}，删除 ${duplicateFiles.length} 个副本...`, 'info')
+    
+    const response = await axios.post('/api/keep_duplicate', {
+      target_path: targetPath.value,
+      keep_file: keepFile,
+      duplicate_files: duplicateFiles
+    })
+
+    if (response.data.status === 'success') {
+      duplicateResult.value = response.data
+      addLog(`[系统] 处理完成：已删除 ${response.data.deleted_count} 个重复文件`, 'info')
+      
+      duplicateGroups.value = duplicateGroups.value.filter((_, idx) => idx !== groupIndex)
+      delete selectedKeepFiles.value[groupIndex]
+      
+      files.value = files.value.filter(f => f.path !== keepFile || !duplicateFiles.includes(f.path))
+    } else {
+      duplicateError.value = '处理重复文件失败：服务器返回错误状态'
+      addLog(`[错误] 处理重复文件失败: ${duplicateError.value}`, 'error')
+    }
+  } catch (err) {
+    duplicateError.value = err.response?.data?.detail || '处理重复文件失败，请稍后再试'
+    addLog(`[错误] 处理重复文件失败: ${duplicateError.value}`, 'error')
+    console.error('Keep duplicate error:', err)
+  } finally {
+    isProcessingDuplicates.value = false
+  }
+}
+
+const processAllDuplicates = async () => {
+  if (!hasDuplicates.value) {
+    return
+  }
+
+  for (let i = duplicateGroups.value.length - 1; i >= 0; i--) {
+    if (selectedKeepFiles.value[i]) {
+      await processKeepSelected(i)
+    }
+  }
+}
 </script>
 
 <template>
@@ -1296,6 +1454,14 @@ const toggleViewMode = () => {
               @click="showHistory"
             >
               查看历史记录
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-amber-400/30 px-4 py-2 text-amber-100 bg-amber-500/10 hover:bg-amber-500/20 transition-colors text-sm"
+              :disabled="isGeneratingPlan || isExecutingPlan || isUndoing || !targetPath"
+              @click="showDuplicates"
+            >
+              检测重复文件
             </button>
           </div>
         </div>
@@ -1771,9 +1937,11 @@ const toggleViewMode = () => {
                     'px-2 py-0.5 rounded-lg border text-xs font-semibold',
                     selectedHistory.type === 'execute' 
                       ? 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20'
-                      : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
+                      : selectedHistory.type === 'deduplicate'
+                        ? 'text-amber-300 bg-amber-500/10 border-amber-400/20'
+                        : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
                   ]">
-                    {{ selectedHistory.type === 'execute' ? '执行计划' : '回滚操作' }}
+                    {{ selectedHistory.type === 'execute' ? '执行计划' : selectedHistory.type === 'deduplicate' ? '去重操作' : '回滚操作' }}
                   </span>
                   <span class="text-xs text-slate-400 font-mono">
                     {{ formatDateTime(selectedHistory.created_at) }}
@@ -1833,9 +2001,11 @@ const toggleViewMode = () => {
                       'px-2 py-0.5 rounded-lg border text-xs font-semibold',
                       item.type === 'execute' 
                         ? 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20'
-                        : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
+                        : item.type === 'deduplicate'
+                          ? 'text-amber-300 bg-amber-500/10 border-amber-400/20'
+                          : 'text-sky-300 bg-sky-500/10 border-sky-400/20'
                     ]">
-                      {{ item.type === 'execute' ? '执行计划' : '回滚操作' }}
+                      {{ item.type === 'execute' ? '执行计划' : item.type === 'deduplicate' ? '去重操作' : '回滚操作' }}
                     </span>
                     <span class="text-xs text-slate-400 font-mono">
                       {{ formatDateTime(item.created_at) }}
@@ -1865,6 +2035,211 @@ const toggleViewMode = () => {
               type="button"
               class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
               @click="hideHistory"
+            >
+              关闭
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 文件去重功能弹窗 -->
+      <div v-if="isShowingDuplicates" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div class="relative w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
+          <!-- 弹窗头部 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10">
+            <div class="flex items-center gap-3">
+              <Sparkles :size="24" class="text-amber-400" />
+              <div>
+                <p class="font-medium text-slate-100">文件去重检测</p>
+                <p class="text-xs text-slate-400 font-mono">
+                  <template v-if="hasDuplicates">
+                    发现 {{ duplicateGroups.length }} 组重复文件，共 {{ totalDuplicateCount }} 个冗余文件
+                    · 可释放空间：{{ formatBytes(totalDuplicateSize) }}
+                  </template>
+                  <template v-else-if="isDetectingDuplicates">
+                    正在扫描...
+                  </template>
+                  <template v-else>
+                    未发现重复文件
+                  </template>
+                </p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                v-if="hasDuplicates"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 hover:bg-amber-500/20 transition-colors text-amber-100 text-xs"
+                :disabled="isProcessingDuplicates || isDetectingDuplicates"
+                @click="processAllDuplicates"
+              >
+                一键处理所有
+              </button>
+              <button
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-xs"
+                :disabled="isDetectingDuplicates"
+                @click="detectDuplicates"
+              >
+                重新检测
+              </button>
+              <button
+                type="button"
+                class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                @click="hideDuplicates"
+                title="关闭"
+              >
+                <X :size="20" class="text-slate-300" />
+              </button>
+            </div>
+          </div>
+
+          <!-- 弹窗内容 -->
+          <div class="flex-1 overflow-auto p-4">
+            <div v-if="duplicateError" class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400">
+              <AlertCircle :size="20" />
+              <p>{{ duplicateError }}</p>
+            </div>
+
+            <div v-else-if="isDetectingDuplicates" class="flex items-center justify-center h-64">
+              <div class="flex items-center gap-3 text-slate-400">
+                <Loader2 :size="24" class="animate-spin" />
+                <p>正在检测重复文件...</p>
+              </div>
+            </div>
+
+            <div v-else-if="duplicateResult" class="p-4 rounded-lg bg-emerald-500/10 border border-emerald-400/20 text-emerald-100">
+              <p class="font-bold">处理完成！</p>
+              <p class="text-sm text-emerald-200/80 mt-1">
+                已删除 {{ duplicateResult.deleted_count }} 个重复文件
+              </p>
+              <p v-if="duplicateResult.kept_file" class="text-xs text-emerald-200/60 mt-2 font-mono">
+                保留文件：{{ duplicateResult.kept_file }}
+              </p>
+            </div>
+
+            <div v-else-if="!hasDuplicates && !isDetectingDuplicates" class="flex flex-col items-center justify-center h-64 text-slate-400">
+              <Sparkles :size="48" class="mb-3 text-slate-600" />
+              <p class="text-lg font-medium">未发现重复文件</p>
+              <p class="text-sm mt-1">当前目录中的文件都是唯一的</p>
+            </div>
+
+            <div v-else class="w-full space-y-4">
+              <div
+                v-for="(group, groupIndex) in duplicateGroups"
+                :key="group.hash"
+                class="p-4 rounded-lg bg-slate-950/70 border border-white/10 space-y-3"
+              >
+                <!-- 组标题 -->
+                <div class="flex items-center justify-between">
+                  <div class="flex items-center gap-3">
+                    <span class="px-2 py-0.5 rounded-lg border text-xs font-semibold text-amber-300 bg-amber-500/10 border-amber-400/20">
+                      重复组 #{{ groupIndex + 1 }}
+                    </span>
+                    <span class="text-xs text-slate-400 font-mono">
+                      {{ group.files.length }} 个文件 · 每个 {{ formatBytes(group.size) }} · 共浪费 {{ formatBytes(group.size * (group.files.length - 1)) }}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    class="px-3 py-1.5 rounded-lg border border-amber-400/30 bg-amber-500/10 hover:bg-amber-500/20 transition-colors text-amber-100 text-xs"
+                    :disabled="isProcessingDuplicates"
+                    @click="processKeepSelected(groupIndex)"
+                  >
+                    处理此组
+                  </button>
+                </div>
+
+                <!-- 哈希信息 -->
+                <div class="text-xs text-slate-500 font-mono truncate">
+                  哈希：{{ group.hash.substring(0, 16) }}...
+                </div>
+
+                <!-- 文件列表 -->
+                <div class="space-y-2">
+                  <div
+                    v-for="(file, fileIndex) in group.files"
+                    :key="file.path"
+                    class="flex items-center gap-3 p-3 rounded-lg transition-colors cursor-pointer"
+                    :class="[
+                      selectedKeepFiles[groupIndex] === file.path
+                        ? 'bg-emerald-500/10 border border-emerald-400/20'
+                        : 'bg-slate-900/50 border border-white/5 hover:bg-slate-800/50'
+                    ]"
+                    @click="selectKeepFile(groupIndex, file.path)"
+                  >
+                    <!-- 选择标记 -->
+                    <div class="flex items-center justify-center w-6 h-6 rounded-full border"
+                      :class="[
+                        selectedKeepFiles[groupIndex] === file.path
+                          ? 'border-emerald-400 bg-emerald-500/20'
+                          : 'border-slate-600'
+                      ]"
+                    >
+                      <CheckCircle
+                        v-if="selectedKeepFiles[groupIndex] === file.path"
+                        :size="14"
+                        class="text-emerald-400"
+                      />
+                    </div>
+
+                    <!-- 文件信息 -->
+                    <div class="p-2 rounded-lg bg-slate-800 text-slate-400">
+                      <FileText :size="20" />
+                    </div>
+
+                    <div class="flex-1 min-w-0">
+                      <div class="flex items-center gap-2">
+                        <p class="font-medium text-slate-200 truncate">{{ file.name }}</p>
+                        <span v-if="selectedKeepFiles[groupIndex] === file.path"
+                          class="px-2 py-0.5 rounded-full text-xs font-semibold text-emerald-300 bg-emerald-500/10"
+                        >
+                          保留
+                        </span>
+                        <span v-else
+                          class="px-2 py-0.5 rounded-full text-xs font-semibold text-red-400 bg-red-500/10"
+                        >
+                          将删除
+                        </span>
+                      </div>
+                      <p class="text-xs text-slate-500 font-mono truncate">{{ file.path }}</p>
+                      <p class="text-xs text-slate-500 font-mono">
+                        {{ file.extension || 'UNKNOWN' }} · {{ formatBytes(file.size) }}
+                      </p>
+                    </div>
+
+                    <!-- 预览按钮 -->
+                    <button
+                      type="button"
+                      class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                      :disabled="isGeneratingPlan || isExecutingPlan"
+                      @click.stop="previewFile(file)"
+                      title="预览文件"
+                    >
+                      <Eye :size="16" class="text-slate-300" />
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 提示 -->
+                <p class="text-xs text-slate-500">
+                  提示：点击选择要保留的文件，其他文件将被删除。删除的文件会进入回收站，可通过"时光倒流"恢复。
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <!-- 弹窗底部 -->
+          <div class="p-4 border-t border-white/10 flex items-center justify-between">
+            <div class="text-xs text-slate-500 font-mono">
+              <template v-if="hasDuplicates">
+                预计可释放空间：<span class="text-amber-400">{{ formatBytes(totalDuplicateSize) }}</span>
+              </template>
+            </div>
+            <button
+              type="button"
+              class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+              @click="hideDuplicates"
             >
               关闭
             </button>
