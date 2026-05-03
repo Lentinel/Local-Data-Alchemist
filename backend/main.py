@@ -257,12 +257,12 @@ class MultiExecuteRequest(BaseModel):
 
 class PreviewPlanRequest(BaseModel):
     target_path: str
-    plan: list[ActionItem]
+    plan: list[ActionPlanItem]
 
 
 def preview_plan_impl(
     target_dir: Path,
-    plan: list[ActionItem]
+    plan: list[ActionPlanItem]
 ) -> dict:
     summary = {
         "total_actions": len(plan),

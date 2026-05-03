@@ -3,11 +3,16 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import axios from 'axios'
 import {
   AlertCircle,
+  AlertTriangle,
+  ArrowRight,
   BarChart3,
+  Check,
   CheckCircle,
   FileText,
   FolderOpen,
+  HardDrive,
   Loader2,
+  Shield,
   Sparkles,
   Eye,
   X,
@@ -16,7 +21,6 @@ import {
   ChevronDown,
   Star,
   Clock,
-  HardDrive,
   Copy,
   Settings,
   Trash2,
@@ -131,7 +135,7 @@ const isMultiMode = ref(false)
 const isShowingPlanPreview = ref(false)
 const isLoadingPreview = ref(false)
 const planPreviewData = ref(null)
-const previewError = ref(null)
+const planPreviewError = ref(null)
 const needFinalConfirmation = ref(false)
 const finalConfirmChecked = ref(false)
 
@@ -594,7 +598,7 @@ const loadPlanPreview = async () => {
   }
 
   isLoadingPreview.value = true
-  previewError.value = null
+  planPreviewError.value = null
 
   try {
     addLog('[安全] 正在执行计划预检查...', 'info')
@@ -622,8 +626,8 @@ const loadPlanPreview = async () => {
 
     return true
   } catch (err) {
-    previewError.value = err.response?.data?.detail || '计划预检查失败'
-    addLog(`[错误] 计划预检查失败: ${previewError.value}`, 'error')
+    planPreviewError.value = err.response?.data?.detail || '计划预检查失败'
+    addLog(`[错误] 计划预检查失败: ${planPreviewError.value}`, 'error')
     console.error('Preview plan error:', err)
     return false
   } finally {
@@ -691,7 +695,7 @@ const executePlanDirectly = async () => {
 const cancelPlanPreview = () => {
   isShowingPlanPreview.value = false
   planPreviewData.value = null
-  previewError.value = null
+  planPreviewError.value = null
   needFinalConfirmation.value = false
   finalConfirmChecked.value = false
 }
