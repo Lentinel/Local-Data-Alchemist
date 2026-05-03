@@ -3,6 +3,7 @@ import json
 import shutil
 import subprocess
 import uuid
+import threading
 from collections import Counter
 from datetime import date, datetime, timedelta
 import hashlib
@@ -25,7 +26,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from typing import Literal
+from typing import Literal, Optional
 
 
 ENV_PATH = Path(__file__).resolve().with_name(".env")
@@ -453,6 +454,46 @@ class MultiExecuteRequest(BaseModel):
         return v
 
 
+TaskStatus = Literal["pending", "running", "completed", "cancelled", "failed"]
+TaskType = Literal["execute_plan", "undo_plan", "rename_execute", "deduplicate"]
+
+
+class TaskProgress(BaseModel):
+    task_id: str = Field(..., description="任务唯一ID")
+    task_type: TaskType = Field(..., description="任务类型")
+    status: TaskStatus = Field(..., description="任务状态")
+    total: int = Field(default=0, ge=0, description="总步骤数")
+    current: int = Field(default=0, ge=0, description="当前步骤")
+    message: str = Field(default="", description="当前消息")
+    current_file: str = Field(default="", description="当前处理的文件")
+    start_time: Optional[str] = Field(default=None, description="开始时间")
+    end_time: Optional[str] = Field(default=None, description="结束时间")
+    error: Optional[str] = Field(default=None, description="错误信息")
+    result: Optional[dict] = Field(default=None, description="执行结果")
+
+    @property
+    def percentage(self) -> float:
+        if self.total == 0:
+            return 0.0
+        return min(100.0, (self.current / self.total) * 100)
+
+
+class TaskStatusResponse(BaseModel):
+    task_id: str
+    status: TaskStatus
+    percentage: float
+    current: int
+    total: int
+    message: str
+    current_file: str
+    error: Optional[str]
+    result: Optional[dict]
+
+
+class CancelTaskRequest(BaseModel):
+    task_id: str = Field(..., min_length=1, description="任务ID")
+
+
 class PreviewPlanRequest(BaseModel):
     target_path: str = Field(..., min_length=1, description="目标目录路径")
     plan: list[ActionPlanItem] = Field(..., min_length=1, description="执行计划列表")
@@ -470,6 +511,100 @@ class PreviewPlanRequest(BaseModel):
         if not v or len(v) == 0:
             raise ValueError("执行计划列表不能为空")
         return v
+
+
+_task_store: dict[str, TaskProgress] = {}
+_task_lock = threading.Lock()
+_task_cancellation_flags: dict[str, bool] = {}
+
+
+def create_task(task_type: TaskType, total: int = 0) -> str:
+    task_id = f"task-{uuid.uuid4().hex[:12]}"
+    with _task_lock:
+        _task_store[task_id] = TaskProgress(
+            task_id=task_id,
+            task_type=task_type,
+            status="pending",
+            total=total,
+            current=0,
+            message="任务已创建，等待执行",
+            current_file="",
+            start_time=datetime.now().isoformat(),
+            end_time=None,
+            error=None,
+            result=None,
+        )
+        _task_cancellation_flags[task_id] = False
+    return task_id
+
+
+def get_task(task_id: str) -> TaskProgress | None:
+    with _task_lock:
+        return _task_store.get(task_id)
+
+
+def update_task_progress(
+    task_id: str,
+    current: int | None = None,
+    message: str | None = None,
+    current_file: str | None = None,
+    status: TaskStatus | None = None,
+    error: str | None = None,
+    result: dict | None = None,
+):
+    with _task_lock:
+        task = _task_store.get(task_id)
+        if not task:
+            return
+        if current is not None:
+            task.current = current
+        if message is not None:
+            task.message = message
+        if current_file is not None:
+            task.current_file = current_file
+        if status is not None:
+            task.status = status
+            if status in {"completed", "cancelled", "failed"}:
+                task.end_time = datetime.now().isoformat()
+        if error is not None:
+            task.error = error
+        if result is not None:
+            task.result = result
+
+
+def is_task_cancelled(task_id: str) -> bool:
+    with _task_lock:
+        return _task_cancellation_flags.get(task_id, False)
+
+
+def cancel_task(task_id: str) -> bool:
+    with _task_lock:
+        if task_id not in _task_store:
+            return False
+        _task_cancellation_flags[task_id] = True
+        task = _task_store[task_id]
+        if task.status in {"pending", "running"}:
+            task.status = "cancelled"
+            task.end_time = datetime.now().isoformat()
+        return True
+
+
+def cleanup_old_tasks(max_age_hours: int = 24):
+    with _task_lock:
+        now = datetime.now()
+        task_ids_to_remove = []
+        for task_id, task in _task_store.items():
+            if task.end_time:
+                try:
+                    end_time = datetime.fromisoformat(task.end_time)
+                    if (now - end_time).total_seconds() > max_age_hours * 3600:
+                        task_ids_to_remove.append(task_id)
+                except (ValueError, TypeError):
+                    task_ids_to_remove.append(task_id)
+        for task_id in task_ids_to_remove:
+            del _task_store[task_id]
+            if task_id in _task_cancellation_flags:
+                del _task_cancellation_flags[task_id]
 
 
 def preview_plan_impl(
@@ -3488,6 +3623,232 @@ async def root():
     return {
         "message": "Local Data Alchemist API is running",
         "version": APP_VERSION,
+    }
+
+
+@app.get("/task_status/{task_id}")
+@app.get("/api/task_status/{task_id}")
+async def get_task_status(task_id: str):
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail=f"任务不存在：{task_id}")
+    
+    return TaskStatusResponse(
+        task_id=task.task_id,
+        status=task.status,
+        percentage=task.percentage,
+        current=task.current,
+        total=task.total,
+        message=task.message,
+        current_file=task.current_file,
+        error=task.error,
+        result=task.result,
+    )
+
+
+@app.post("/cancel_task")
+@app.post("/api/cancel_task")
+async def cancel_task_endpoint(request: CancelTaskRequest):
+    success = cancel_task(request.task_id)
+    if not success:
+        raise HTTPException(status_code=404, detail=f"任务不存在：{request.task_id}")
+    
+    task = get_task(request.task_id)
+    return {
+        "status": "success",
+        "task_id": request.task_id,
+        "message": "取消请求已发送",
+        "current_status": task.status if task else "unknown",
+    }
+
+
+@app.post("/start_execute_task")
+@app.post("/api/start_execute_task")
+async def start_execute_task(request: ExecutePlanRequest):
+    task_id = create_task("execute_plan", total=len(request.plan))
+    
+    def run_task():
+        update_task_progress(task_id, status="running", message="开始执行炼金计划")
+        
+        try:
+            target_dir = get_target_dir(request.target_path)
+            results = []
+            snapshot_path = get_snapshot_path(target_dir)
+            
+            if snapshot_path.exists():
+                update_task_progress(task_id, status="failed", error="检测到未回滚的 snapshot，请先执行 Undo 后再运行新的炼金计划。")
+                return
+            
+            snapshot_operations = []
+            
+            for i, item in enumerate(request.plan):
+                if is_task_cancelled(task_id):
+                    update_task_progress(task_id, status="cancelled", message=f"任务已取消，已处理 {i} 个文件")
+                    return
+                
+                if item.action not in ALLOWED_ACTIONS:
+                    update_task_progress(task_id, status="failed", error=f"不支持的操作：{item.action}")
+                    return
+                
+                if item.action in {"rename_and_move", "move"}:
+                    if not item.target_path:
+                        update_task_progress(task_id, status="failed", error=f"{item.action} 操作缺少 target_path。")
+                        return
+            
+            total_items = len(request.plan)
+            for i, item in enumerate(request.plan):
+                if is_task_cancelled(task_id):
+                    update_task_progress(task_id, status="cancelled", message=f"任务已取消，已处理 {i} 个文件")
+                    return
+                
+                update_task_progress(
+                    task_id,
+                    current=i + 1,
+                    message=f"正在处理 {i + 1}/{total_items}：{item.file}",
+                    current_file=item.file,
+                )
+                
+                if item.action not in ALLOWED_ACTIONS:
+                    results.append(
+                        {
+                            "file": item.file,
+                            "action": item.action,
+                            "original_path": item.file,
+                            "new_path": None,
+                            "status": "skipped",
+                            "message": f"不支持的操作：{item.action}",
+                        }
+                    )
+                    continue
+                
+                source_path = resolve_inside_target(target_dir, item.file)
+                if not source_path.exists():
+                    results.append(
+                        {
+                            "file": item.file,
+                            "action": item.action,
+                            "original_path": item.file,
+                            "new_path": None,
+                            "status": "skipped",
+                            "message": "源文件不存在，可能已被处理。",
+                        }
+                    )
+                    continue
+                
+                if item.action == "delete":
+                    trash_path = resolve_inside_target(
+                        target_dir,
+                        f".alchemy_trash/{uuid.uuid4().hex}/{Path(item.file).name}",
+                    )
+                    trash_path.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(source_path), str(trash_path))
+                    snapshot_operations.append(
+                        {
+                            "action": item.action,
+                            "original_path": item.file,
+                            "new_path": to_target_relative(target_dir, trash_path),
+                        }
+                    )
+                    results.append(
+                        {
+                            "file": item.file,
+                            "action": item.action,
+                            "original_path": item.file,
+                            "new_path": to_target_relative(target_dir, trash_path),
+                            "absolute_original_path": str(source_path),
+                            "absolute_new_path": str(trash_path),
+                            "status": "success",
+                        }
+                    )
+                    continue
+                
+                if item.action == "keep":
+                    results.append(
+                        {
+                            "file": item.file,
+                            "action": item.action,
+                            "original_path": item.file,
+                            "new_path": item.file,
+                            "absolute_original_path": str(source_path),
+                            "absolute_new_path": str(source_path),
+                            "status": "success",
+                        }
+                    )
+                    continue
+                
+                target_path = resolve_inside_target(target_dir, item.target_path)
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                shutil.move(str(source_path), str(target_path))
+                snapshot_operations.append(
+                    {
+                        "action": item.action,
+                        "original_path": item.file,
+                        "new_path": item.target_path,
+                    }
+                )
+                results.append(
+                    {
+                        "file": item.file,
+                        "action": item.action,
+                        "original_path": item.file,
+                        "target_path": item.target_path,
+                        "new_path": item.target_path,
+                        "absolute_original_path": str(source_path),
+                        "absolute_new_path": str(target_path),
+                        "status": "success",
+                    }
+                )
+            
+            if is_task_cancelled(task_id):
+                update_task_progress(task_id, status="cancelled", message=f"任务已取消，已处理 {len(results)} 个文件")
+                return
+            
+            write_snapshot(target_dir, snapshot_operations)
+            
+            history_id = uuid.uuid4().hex
+            plan_dict = [p.dict() for p in request.plan] if request.plan else []
+            
+            write_history(
+                target_dir=target_dir,
+                history_id=history_id,
+                operation_type="execute",
+                target_path=str(target_dir),
+                plan=plan_dict,
+                results=results,
+                snapshot_path=str(snapshot_path),
+            )
+            
+            final_result = {
+                "status": "success",
+                "executed": len(results),
+                "results": results,
+                "snapshot": snapshot_path.name,
+                "snapshot_path": str(snapshot_path),
+                "history_id": history_id,
+            }
+            
+            update_task_progress(
+                task_id,
+                current=total_items,
+                status="completed",
+                message=f"执行完成，共处理 {len(results)} 个文件",
+                result=final_result,
+            )
+            
+        except HTTPException as e:
+            update_task_progress(task_id, status="failed", error=str(e.detail))
+        except Exception as e:
+            update_task_progress(task_id, status="failed", error=str(e))
+    
+    thread = threading.Thread(target=run_task, daemon=True)
+    thread.start()
+    
+    return {
+        "status": "started",
+        "task_id": task_id,
+        "message": "任务已启动",
+        "total_items": len(request.plan),
     }
 
 

@@ -139,6 +139,92 @@ const planPreviewError = ref(null)
 const needFinalConfirmation = ref(false)
 const finalConfirmChecked = ref(false)
 
+// 任务进度追踪
+const currentTaskId = ref(null)
+const taskStatus = ref(null)
+const taskProgress = ref(0)
+const taskTotal = ref(0)
+const taskMessage = ref('')
+const taskCurrentFile = ref('')
+const isTaskRunning = ref(false)
+let taskPollingInterval = null
+
+const clearTaskPolling = () => {
+  if (taskPollingInterval) {
+    clearInterval(taskPollingInterval)
+    taskPollingInterval = null
+  }
+}
+
+const pollTaskStatus = async () => {
+  if (!currentTaskId.value) {
+    clearTaskPolling()
+    return
+  }
+
+  try {
+    const response = await axios.get(`/api/task_status/${currentTaskId.value}`)
+    const data = response.data
+    
+    taskStatus.value = data.status
+    taskProgress.value = data.current
+    taskTotal.value = data.total
+    taskMessage.value = data.message
+    taskCurrentFile.value = data.current_file
+
+    if (data.status === 'completed') {
+      clearTaskPolling()
+      isTaskRunning.value = false
+      isExecutingPlan.value = false
+      
+      if (data.result) {
+        executionResult.value = data.result
+        data.result.results?.forEach((result) => {
+          if (result.action === 'keep') {
+            addLog(`[执行] 保留文件: ${result.original_path}`, 'action')
+            return
+          }
+          addLog(`[执行] 执行 ${result.action}: ${result.original_path} -> ${result.new_path || result.target_path || 'null'}`, 'action')
+        })
+        addLog(`[系统] 快照已写入: ${data.result.snapshot_path || data.result.snapshot}`, 'info')
+      }
+      
+      addLog('[系统] 任务执行完成', 'info')
+      currentTaskId.value = null
+    } else if (data.status === 'cancelled') {
+      clearTaskPolling()
+      isTaskRunning.value = false
+      isExecutingPlan.value = false
+      addLog(`[系统] 任务已取消: ${data.message}`, 'warning')
+      currentTaskId.value = null
+    } else if (data.status === 'failed') {
+      clearTaskPolling()
+      isTaskRunning.value = false
+      isExecutingPlan.value = false
+      error.value = data.error || '任务执行失败'
+      addLog(`[错误] 任务执行失败: ${data.error}`, 'error')
+      currentTaskId.value = null
+    }
+  } catch (err) {
+    console.error('Poll task status error:', err)
+  }
+}
+
+const cancelCurrentTask = async () => {
+  if (!currentTaskId.value) {
+    return
+  }
+
+  try {
+    await axios.post('/api/cancel_task', {
+      task_id: currentTaskId.value
+    })
+    addLog('[系统] 正在取消任务...', 'info')
+  } catch (err) {
+    addLog(`[错误] 取消任务失败: ${extractErrorMessage(err)}`, 'error')
+  }
+}
+
 const CATEGORY_COLORS = {
   images: '#10b981',
   documents: '#3b82f6',
@@ -469,6 +555,7 @@ onBeforeUnmount(() => {
   if (copyToastTimer) {
     window.clearTimeout(copyToastTimer)
   }
+  clearTaskPolling()
 })
 
 const formatBytes = (bytes) => {
@@ -711,28 +798,34 @@ const executePlanDirectly = async () => {
   executionResult.value = null
   undoMessage.value = null
   isExecutingPlan.value = true
+  isTaskRunning.value = true
   addLog('[执行] 审批通过，开始执行文件炼金计划', 'action')
 
   try {
-    const response = await axios.post('/api/execute_plan', {
+    const response = await axios.post('/api/start_execute_task', {
       target_path: targetPath.value,
       plan: actionPlan.value,
     })
-    executionResult.value = response.data
-    response.data.results?.forEach((result) => {
-      if (result.action === 'keep') {
-        addLog(`[执行] 保留文件: ${result.original_path}`, 'action')
-        return
-      }
-      addLog(`[执行] 执行 ${result.action}: ${result.original_path} -> ${result.new_path || result.target_path || 'null'}`, 'action')
-    })
-    addLog(`[系统] 快照已写入: ${response.data.snapshot_path || response.data.snapshot}`, 'info')
+    
+    if (response.data.status === 'started') {
+      currentTaskId.value = response.data.task_id
+      taskTotal.value = response.data.total_items
+      taskProgress.value = 0
+      taskMessage.value = '任务已启动，准备执行...'
+      
+      addLog(`[系统] 任务已启动，ID: ${currentTaskId.value}，共 ${response.data.total_items} 个操作`, 'info')
+      
+      clearTaskPolling()
+      taskPollingInterval = setInterval(pollTaskStatus, 500)
+    } else {
+      throw new Error('启动任务失败')
+    }
   } catch (err) {
     error.value = extractErrorMessage(err)
     addLog(`[错误] 执行炼金计划失败: ${error.value}`, 'error')
     console.error('Execute plan error:', err)
-  } finally {
     isExecutingPlan.value = false
+    isTaskRunning.value = false
     planPreviewData.value = null
     needFinalConfirmation.value = false
   }
@@ -2321,6 +2414,38 @@ const getHistoryTypeLabels = (type) => {
             </span>
             <span v-else>批准并执行炼金</span>
           </button>
+
+          <div v-if="isTaskRunning && taskTotal > 0" class="p-4 rounded-lg border border-sky-400/20 bg-sky-500/10 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <Loader2 :size="18" class="animate-spin text-sky-400" />
+                <span class="text-sm font-medium text-sky-200">{{ taskMessage }}</span>
+              </div>
+              <span class="text-xs text-sky-300 font-mono">
+                {{ taskProgress }} / {{ taskTotal }} ({{ taskTotal > 0 ? Math.round((taskProgress / taskTotal) * 100) : 0 }}%)
+              </span>
+            </div>
+
+            <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden">
+              <div
+                class="h-full bg-gradient-to-r from-sky-500 to-cyan-400 rounded-full transition-all duration-300"
+                :style="{ width: `${taskTotal > 0 ? (taskProgress / taskTotal) * 100 : 0}%` }"
+              ></div>
+            </div>
+
+            <div v-if="taskCurrentFile" class="flex items-center gap-2 text-xs">
+              <FileText :size="14" class="text-sky-400" />
+              <span class="text-sky-200 font-mono truncate">{{ taskCurrentFile }}</span>
+            </div>
+
+            <button
+              type="button"
+              class="w-full mt-2 px-4 py-2 rounded-lg border border-red-400/30 text-red-300 bg-red-500/10 hover:bg-red-500/20 transition-colors text-sm font-medium"
+              @click="cancelCurrentTask"
+            >
+              取消任务
+            </button>
+          </div>
 
           <div v-if="executionResult" class="p-4 rounded-lg border border-emerald-400/20 bg-emerald-500/10 text-emerald-100">
             <p class="font-bold">炼金执行完成：{{ executionResult.executed }} 条操作已处理</p>
