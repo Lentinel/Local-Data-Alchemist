@@ -218,6 +218,31 @@ class ApplyTemplateRequest(BaseModel):
     template_id: str
 
 
+class RenameRule(BaseModel):
+    rule_type: str
+    prefix: str = ""
+    suffix: str = ""
+    find_text: str = ""
+    replace_text: str = ""
+    regex_pattern: str = ""
+    regex_replacement: str = ""
+    start_number: int = 1
+    number_padding: int = 3
+    number_separator: str = "_"
+    number_position: str = "prefix"
+
+
+class RenamePreviewRequest(BaseModel):
+    target_path: str
+    selected_files: list[str]
+    rules: list[RenameRule]
+
+
+class RenameExecuteRequest(BaseModel):
+    target_path: str
+    rename_plan: list[dict]
+
+
 def get_templates_dir() -> Path:
     return Path(__file__).resolve().parent / "templates"
 
@@ -798,6 +823,238 @@ def apply_template_to_files(template: dict, files_info: list[dict], target_dir: 
         processed_files.add(file_path)
     
     return plan
+
+
+def apply_rename_rules(
+    original_name: str,
+    rules: list[RenameRule],
+    index: int = 0,
+    total_count: int = 1
+) -> str:
+    name_stem = Path(original_name).stem
+    extension = Path(original_name).suffix
+    current_name = name_stem
+    
+    for rule in rules:
+        rule_type = rule.rule_type
+        
+        if rule_type == "prefix":
+            prefix = rule.prefix or ""
+            current_name = prefix + current_name
+        
+        elif rule_type == "suffix":
+            suffix = rule.suffix or ""
+            current_name = current_name + suffix
+        
+        elif rule_type == "find_replace":
+            find_text = rule.find_text or ""
+            replace_text = rule.replace_text or ""
+            if find_text:
+                current_name = current_name.replace(find_text, replace_text)
+        
+        elif rule_type == "regex":
+            pattern = rule.regex_pattern or ""
+            replacement = rule.regex_replacement or ""
+            if pattern:
+                try:
+                    current_name = re.sub(pattern, replacement, current_name)
+                except re.error:
+                    pass
+        
+        elif rule_type == "numbering":
+            start_num = rule.start_number or 1
+            padding = rule.number_padding or 3
+            separator = rule.number_separator or "_"
+            position = rule.number_position or "prefix"
+            
+            num_str = str(start_num + index).zfill(padding)
+            
+            if position == "prefix":
+                current_name = num_str + separator + current_name
+            elif position == "suffix":
+                current_name = current_name + separator + num_str
+            elif position == "replace":
+                current_name = num_str
+        
+        elif rule_type == "date_prefix":
+            today = date.today().isoformat()
+            separator = rule.number_separator or "_"
+            current_name = today + separator + current_name
+        
+        elif rule_type == "date_suffix":
+            today = date.today().isoformat()
+            separator = rule.number_separator or "_"
+            current_name = current_name + separator + today
+    
+    final_name = current_name + extension
+    return final_name
+
+
+def generate_rename_preview(
+    target_dir: Path,
+    selected_files: list[str],
+    rules: list[RenameRule]
+) -> dict:
+    results = []
+    conflicts = []
+    new_names = set()
+    file_info_map = {}
+    
+    for file_path in selected_files:
+        full_path = resolve_inside_target(target_dir, file_path)
+        if not full_path.exists():
+            continue
+        
+        original_name = full_path.name
+        file_info_map[file_path] = {
+            "path": file_path,
+            "original_name": original_name,
+            "full_path": full_path
+        }
+    
+    sorted_files = sorted(file_info_map.items(), key=lambda x: x[1]["original_name"])
+    
+    for index, (file_path, info) in enumerate(sorted_files):
+        original_name = info["original_name"]
+        new_name = apply_rename_rules(
+            original_name,
+            rules,
+            index,
+            len(sorted_files)
+        )
+        
+        parent_dir = Path(file_path).parent
+        if parent_dir == Path("."):
+            new_path = new_name
+        else:
+            new_path = str(parent_dir / new_name)
+        
+        conflict = False
+        if new_name != original_name:
+            if new_name in new_names:
+                conflict = True
+                conflicts.append({
+                    "file": file_path,
+                    "new_name": new_name,
+                    "reason": "与其他重命名文件冲突"
+                })
+            
+            new_full_path = resolve_inside_target(target_dir, new_path)
+            if new_full_path.exists() and new_path != file_path:
+                conflict = True
+                conflicts.append({
+                    "file": file_path,
+                    "new_name": new_name,
+                    "reason": "目标文件已存在"
+                })
+            
+            new_names.add(new_name)
+        
+        results.append({
+            "original_path": file_path,
+            "original_name": original_name,
+            "new_name": new_name,
+            "new_path": new_path,
+            "has_change": new_name != original_name,
+            "conflict": conflict,
+            "index": index
+        })
+    
+    return {
+        "status": "success",
+        "previews": results,
+        "conflicts": conflicts,
+        "has_conflicts": len(conflicts) > 0,
+        "total_files": len(results),
+        "changed_count": sum(1 for r in results if r["has_change"])
+    }
+
+
+def execute_rename_plan(
+    target_dir: Path,
+    rename_plan: list[dict]
+) -> dict:
+    snapshot_path = get_snapshot_path(target_dir)
+    if snapshot_path.exists():
+        raise HTTPException(
+            status_code=409,
+            detail="检测到未回滚的 snapshot，请先执行 Undo 后再运行重命名操作。"
+        )
+    
+    results = []
+    snapshot_operations = []
+    
+    valid_plans = [p for p in rename_plan if p.get("has_change") and not p.get("conflict")]
+    
+    for item in valid_plans:
+        original_path = item.get("original_path")
+        new_path = item.get("new_path")
+        
+        if not original_path or not new_path:
+            continue
+        
+        source_path = resolve_inside_target(target_dir, original_path)
+        dest_path = resolve_inside_target(target_dir, new_path)
+        
+        if not source_path.exists():
+            results.append({
+                "original_path": original_path,
+                "new_path": new_path,
+                "status": "skipped",
+                "message": "源文件不存在"
+            })
+            continue
+        
+        if dest_path.exists() and new_path != original_path:
+            results.append({
+                "original_path": original_path,
+                "new_path": new_path,
+                "status": "skipped",
+                "message": "目标路径已存在"
+            })
+            continue
+        
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source_path), str(dest_path))
+        
+        snapshot_operations.append({
+            "action": "rename_and_move",
+            "original_path": original_path,
+            "new_path": new_path,
+        })
+        
+        results.append({
+            "original_path": original_path,
+            "original_name": Path(original_path).name,
+            "new_path": new_path,
+            "new_name": Path(new_path).name,
+            "status": "success",
+            "absolute_original_path": str(source_path),
+            "absolute_new_path": str(dest_path),
+        })
+    
+    if snapshot_operations:
+        write_snapshot(target_dir, snapshot_operations)
+        
+        history_id = uuid.uuid4().hex
+        write_history(
+            target_dir=target_dir,
+            history_id=history_id,
+            operation_type="rename",
+            target_path=str(target_dir),
+            plan=rename_plan,
+            results=results,
+            snapshot_path=str(snapshot_path),
+        )
+    
+    return {
+        "status": "success",
+        "executed": len([r for r in results if r["status"] == "success"]),
+        "total": len(results),
+        "results": results,
+        "snapshot_path": str(snapshot_path),
+        "history_id": history_id if snapshot_operations else None,
+    }
 
 
 def classify_file(extension: str) -> str:
@@ -2233,6 +2490,45 @@ async def api_apply_template(request: ApplyTemplateRequest):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"应用模板失败：{str(exc)}") from exc
+
+
+@app.post("/rename_preview")
+@app.post("/api/rename_preview")
+async def api_rename_preview(request: RenamePreviewRequest):
+    try:
+        target_dir = get_target_dir(request.target_path)
+        
+        result = generate_rename_preview(
+            target_dir,
+            request.selected_files,
+            request.rules
+        )
+        
+        return result
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"生成重命名预览失败：{str(exc)}") from exc
+
+
+@app.post("/rename_execute")
+@app.post("/api/rename_execute")
+async def api_rename_execute(request: RenameExecuteRequest):
+    try:
+        target_dir = get_target_dir(request.target_path)
+        
+        result = execute_rename_plan(
+            target_dir,
+            request.rename_plan
+        )
+        
+        return result
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"执行重命名失败：{str(exc)}") from exc
 
 
 @app.get("/")
