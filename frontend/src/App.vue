@@ -110,6 +110,38 @@ const RENAME_RULE_TYPES = [
   { value: 'date_suffix', label: '日期后缀', icon: '📅' },
 ]
 
+// 数据可视化仪表盘
+const isShowingDashboard = ref(false)
+const isLoadingDashboard = ref(false)
+const dashboardStats = ref(null)
+const dashboardError = ref(null)
+
+const CATEGORY_COLORS = {
+  images: '#10b981',
+  documents: '#3b82f6',
+  archives: '#a855f7',
+  code: '#84cc16',
+  logs: '#f59e0b',
+  unknown: '#64748b',
+}
+
+const CATEGORY_LABELS = {
+  images: '图片',
+  documents: '文档',
+  archives: '压缩包',
+  code: '代码',
+  logs: '日志',
+  unknown: '其他',
+}
+
+const SIZE_BUCKET_LABELS = {
+  tiny: '< 100KB',
+  small: '100KB - 1MB',
+  medium: '1MB - 10MB',
+  large: '10MB - 100MB',
+  huge: '> 100MB',
+}
+
 const categoryTone = {
   logs: 'text-amber-300 bg-amber-500/10 border-amber-400/20',
   images: 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20',
@@ -1451,6 +1483,127 @@ const getRenameRuleLabel = (rule) => {
   }
   return typeInfo.label
 }
+
+// 数据可视化仪表盘方法
+const showDashboard = async () => {
+  if (!targetPath.value) {
+    addLog('[提示] 请先选择目标目录', 'info')
+    return
+  }
+
+  isShowingDashboard.value = true
+  dashboardStats.value = null
+  dashboardError.value = null
+  await loadDashboardStats()
+}
+
+const hideDashboard = () => {
+  isShowingDashboard.value = false
+  dashboardStats.value = null
+  dashboardError.value = null
+}
+
+const loadDashboardStats = async () => {
+  if (!targetPath.value) {
+    return
+  }
+
+  isLoadingDashboard.value = true
+  dashboardError.value = null
+
+  try {
+    addLog('[系统] 正在生成数据可视化报表...', 'info')
+
+    const response = await axios.post('/api/dashboard_stats', {
+      target_path: targetPath.value
+    })
+
+    if (response.data.status === 'success') {
+      dashboardStats.value = response.data.stats
+      addLog('[系统] 数据可视化报表生成完成', 'info')
+    } else {
+      dashboardError.value = '生成报表失败：服务器返回错误状态'
+      addLog(`[错误] 生成仪表盘统计失败: ${dashboardError.value}`, 'error')
+    }
+  } catch (err) {
+    dashboardError.value = err.response?.data?.detail || '生成报表失败，请稍后再试'
+    addLog(`[错误] 生成仪表盘统计失败: ${dashboardError.value}`, 'error')
+    console.error('Load dashboard stats error:', err)
+  } finally {
+    isLoadingDashboard.value = false
+  }
+}
+
+const calculatePieChartPercentages = () => {
+  if (!dashboardStats.value?.overview?.categories) {
+    return []
+  }
+
+  const categories = dashboardStats.value.overview.categories
+  const total = Object.values(categories).reduce((sum, cat) => sum + (cat.count || 0), 0)
+  
+  let currentAngle = 0
+  const segments = []
+
+  for (const [key, data] of Object.entries(categories)) {
+    const count = data.count || 0
+    if (count === 0) continue
+
+    const percentage = total > 0 ? (count / total) * 100 : 0
+    const angle = total > 0 ? (count / total) * 360 : 0
+
+    segments.push({
+      key,
+      count,
+      size: data.size,
+      percentage: percentage.toFixed(1),
+      angle,
+      startAngle: currentAngle,
+      endAngle: currentAngle + angle,
+      color: CATEGORY_COLORS[key] || '#64748b',
+      label: CATEGORY_LABELS[key] || key
+    })
+
+    currentAngle += angle
+  }
+
+  return segments
+}
+
+const getSizeDistributionData = () => {
+  if (!dashboardStats.value?.size_distribution) {
+    return []
+  }
+
+  const sizeDist = dashboardStats.value.size_distribution
+  const total = Object.values(sizeDist).reduce((sum, b) => sum + (b.count || 0), 0)
+
+  return Object.entries(sizeDist).map(([key, bucket]) => ({
+    key,
+    count: bucket.count || 0,
+    size: bucket.size || 0,
+    label: SIZE_BUCKET_LABELS[key] || key,
+    percentage: total > 0 ? ((bucket.count || 0) / total) * 100 : 0,
+  })).filter(b => b.count > 0)
+}
+
+const getWeeklyActivityData = () => {
+  if (!dashboardStats.value?.weekly_activity) {
+    return []
+  }
+
+  return dashboardStats.value.weekly_activity
+}
+
+const getHistoryTypeLabels = (type) => {
+  const labels = {
+    execute: '执行计划',
+    undo: '回滚操作',
+    deduplicate: '去重操作',
+    rename: '重命名操作',
+  }
+  return labels[type] || type
+}
 </script>
 
 <template>
@@ -1947,6 +2100,14 @@ const getRenameRuleLabel = (rule) => {
               @click="showRenamer"
             >
               批量重命名
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-amber-400/50 px-4 py-2 text-amber-100 bg-gradient-to-r from-amber-500/10 to-rose-500/10 hover:from-amber-500/20 hover:to-rose-500/20 transition-colors text-sm"
+              :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
+              @click="showDashboard"
+            >
+              📊 数据可视化
             </button>
           </div>
         </div>
@@ -3301,6 +3462,333 @@ const getRenameRuleLabel = (rule) => {
             >
               关闭
             </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 数据可视化仪表盘弹窗 -->
+      <div v-if="isShowingDashboard" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div class="relative w-full max-w-6xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
+          <!-- 弹窗头部 - 金色主题体现炼金感 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10 bg-gradient-to-r from-amber-500/5 to-rose-500/5">
+            <div class="flex items-center gap-3">
+              <BarChart3 :size="24" class="text-amber-400" />
+              <div>
+                <p class="font-medium text-slate-100">炼金数据仪表盘</p>
+                <p class="text-xs text-slate-400 font-mono">
+                  <template v-if="dashboardStats">
+                    共 {{ dashboardStats.overview?.total_files || 0 }} 个文件 · 总大小 {{ formatBytes(dashboardStats.overview?.total_size || 0) }}
+                  </template>
+                  <template v-else-if="isLoadingDashboard">
+                    正在生成数据报告...
+                  </template>
+                </p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-xs"
+                :disabled="isLoadingDashboard"
+                @click="loadDashboardStats"
+              >
+                刷新数据
+              </button>
+              <button
+                type="button"
+                class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                @click="hideDashboard"
+                title="关闭"
+              >
+                <X :size="20" class="text-slate-300" />
+              </button>
+            </div>
+          </div>
+
+          <!-- 弹窗内容区域 -->
+          <div class="flex-1 overflow-auto p-4">
+            <!-- 加载中 -->
+            <div v-if="isLoadingDashboard" class="flex items-center justify-center h-64">
+              <div class="flex flex-col items-center gap-4 text-slate-400">
+                <div class="flex items-center gap-3">
+                  <Loader2 :size="24" class="animate-spin text-amber-400" />
+                  <p class="text-sm">正在炼金数据...</p>
+                </div>
+                <div class="w-64 h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div class="h-full bg-gradient-to-r from-amber-500 to-rose-500 rounded-full animate-pulse" style="width: 70%;" />
+                </div>
+              </div>
+            </div>
+
+            <!-- 错误显示 -->
+            <div v-else-if="dashboardError" class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400">
+              <AlertCircle :size="20" />
+              <p>{{ dashboardError }}</p>
+            </div>
+
+            <!-- 无数据状态 -->
+            <div v-else-if="!dashboardStats" class="flex flex-col items-center justify-center h-64 text-slate-500">
+              <BarChart3 :size="48" class="mb-3 text-slate-700" />
+              <p class="text-lg">暂无数据</p>
+              <p class="text-sm mt-1">选择目标目录后点击"刷新数据"生成报告</p>
+            </div>
+
+            <!-- 仪表盘内容 -->
+            <div v-else class="space-y-6">
+              <!-- 概览卡片行 -->
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs text-slate-400">总文件数</p>
+                      <p class="text-2xl font-bold text-slate-100">{{ dashboardStats.overview?.total_files || 0 }}</p>
+                    </div>
+                    <div class="p-2 rounded-lg bg-sky-500/10">
+                      <FileText :size="20" class="text-sky-400" />
+                    </div>
+                  </div>
+                </div>
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs text-slate-400">总大小</p>
+                      <p class="text-2xl font-bold text-slate-100">{{ formatBytes(dashboardStats.overview?.total_size || 0) }}</p>
+                    </div>
+                    <div class="p-2 rounded-lg bg-emerald-500/10">
+                      <HardDrive :size="20" class="text-emerald-400" />
+                    </div>
+                  </div>
+                </div>
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs text-slate-400">文件类型</p>
+                      <p class="text-2xl font-bold text-slate-100">
+                        {{ Object.entries(dashboardStats.overview?.categories || {}).filter(([, c]) => (c.count || 0) > 0).length }}
+                      </p>
+                    </div>
+                    <div class="p-2 rounded-lg bg-fuchsia-500/10">
+                      <Star :size="20" class="text-fuchsia-400" />
+                    </div>
+                  </div>
+                </div>
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <div class="flex items-center justify-between">
+                    <div>
+                      <p class="text-xs text-slate-400">历史操作</p>
+                      <p class="text-2xl font-bold text-slate-100">
+                        {{ dashboardStats.history_stats?.total_operations || 0 }}
+                      </p>
+                    </div>
+                    <div class="p-2 rounded-lg bg-amber-500/10">
+                      <Clock :size="20" class="text-amber-400" />
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 主要图表区域 -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- 环形图：文件类型分布 -->
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <h3 class="text-sm font-medium text-slate-200 mb-4">文件类型分布</h3>
+                  <div class="flex items-center gap-6">
+                    <!-- SVG环形图 -->
+                    <div class="w-40 h-40 flex-shrink-0">
+                      <svg viewBox="0 0 100 100" class="w-full h-full transform -rotate-90">
+                        <circle cx="50" cy="50" r="36" fill="none" stroke="#1e293b" stroke-width="16" />
+                        <circle
+                          v-for="(segment, index) in calculatePieChartPercentages()"
+                          :key="segment.key"
+                          :cx="50"
+                          :cy="50"
+                          :r="36"
+                          fill="none"
+                          :stroke="segment.color"
+                          stroke-width="16"
+                          :stroke-dasharray="`${(segment.angle / 360) * 226.195} 226.195`"
+                          :stroke-dashoffset="-(segment.startAngle / 360) * 226.195"
+                          class="transition-all duration-500"
+                        />
+                      </svg>
+                    </div>
+                    <!-- 图例 -->
+                    <div class="flex-1 space-y-2">
+                      <div
+                        v-for="segment in calculatePieChartPercentages()"
+                        :key="segment.key"
+                        class="flex items-center justify-between text-sm"
+                      >
+                        <div class="flex items-center gap-2">
+                          <div
+                            class="w-3 h-3 rounded-full"
+                            :style="{ backgroundColor: segment.color }"
+                          />
+                          <span class="text-slate-300">{{ segment.label }}</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                          <span class="text-slate-400 font-mono text-xs">{{ segment.count }} 个</span>
+                          <span
+                            class="text-xs font-medium px-1.5 py-0.5 rounded"
+                            :style="{ backgroundColor: segment.color + '20', color: segment.color }"
+                          >
+                            {{ segment.percentage }}%
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 条形图：大小分布 -->
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <h3 class="text-sm font-medium text-slate-200 mb-4">文件大小分布</h3>
+                  <div class="space-y-3">
+                    <div
+                      v-for="bucket in getSizeDistributionData()"
+                      :key="bucket.key"
+                      class="space-y-1"
+                    >
+                      <div class="flex items-center justify-between text-xs">
+                        <span class="text-slate-300">{{ bucket.label }}</span>
+                        <span class="text-slate-400">{{ bucket.count }} 个 ({{ formatBytes(bucket.size) }})</span>
+                      </div>
+                      <div class="h-5 bg-slate-800/50 rounded-full overflow-hidden">
+                        <div
+                          class="h-full rounded-full transition-all duration-500"
+                          :style="{
+                            width: `${bucket.percentage}%`,
+                            background: 'linear-gradient(90deg, #0ea5e9, #6366f1)'
+                          }"
+                        />
+                      </div>
+                    </div>
+                    <div v-if="getSizeDistributionData().length === 0" class="text-center py-8 text-slate-500">
+                      暂无数据
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 时间线和扩展统计 -->
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- 周活动热力图 -->
+                <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                  <h3 class="text-sm font-medium text-slate-200 mb-4">近7天文件修改分布</h3>
+                  <div class="space-y-2">
+                    <div class="flex items-center gap-2 text-xs text-slate-500 mb-2">
+                      <span class="w-16">日期</span>
+                      <span class="flex-1">文件活动强度</span>
+                      <span class="w-12 text-right">数量</span>
+                    </div>
+                    <div
+                      v-for="day in getWeeklyActivityData()"
+                      :key="day.date"
+                      class="flex items-center gap-2"
+                    >
+                      <span class="w-16 text-xs text-slate-400 font-mono">
+                        {{ day.date.split('-').slice(1).join('/') }}
+                      </span>
+                      <div class="flex-1 h-6 bg-slate-800/30 rounded overflow-hidden">
+                        <div
+                          class="h-full transition-all duration-500"
+                          :style="{
+                            width: `${Math.min(100, (day.count || 0) * 10)}%`,
+                            background: day.count > 0
+                              ? 'linear-gradient(90deg, #22c55e, #84cc16)'
+                              : 'transparent'
+                          }"
+                        />
+                      </div>
+                      <span class="w-12 text-right text-xs text-slate-400 font-mono">
+                        {{ day.count || 0 }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- 扩展名Top10和历史统计 -->
+                <div class="space-y-4">
+                  <!-- 扩展名Top10 -->
+                  <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                    <h3 class="text-sm font-medium text-slate-200 mb-3">热门扩展名 TOP 10</h3>
+                    <div class="flex flex-wrap gap-2">
+                      <template v-if="dashboardStats.extension_distribution">
+                        <span
+                          v-for="(data, ext) in dashboardStats.extension_distribution"
+                          :key="ext"
+                          class="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-mono"
+                          :class="[
+                            'border',
+                            ext.toLowerCase().includes('jpg') || ext.toLowerCase().includes('png') || ext.toLowerCase().includes('gif') || ext.toLowerCase().includes('webp')
+                              ? 'bg-emerald-500/10 text-emerald-300 border-emerald-400/20'
+                              : ext.toLowerCase().includes('doc') || ext.toLowerCase().includes('pdf') || ext.toLowerCase().includes('xls') || ext.toLowerCase().includes('ppt')
+                                ? 'bg-sky-500/10 text-sky-300 border-sky-400/20'
+                                : ext.toLowerCase().includes('zip') || ext.toLowerCase().includes('rar') || ext.toLowerCase().includes('7z')
+                                  ? 'bg-fuchsia-500/10 text-fuchsia-300 border-fuchsia-400/20'
+                                  : 'bg-slate-500/10 text-slate-300 border-slate-400/20'
+                          ]"
+                        >
+                          {{ ext }}
+                          <span class="text-slate-400">·{{ data.count }}</span>
+                        </span>
+                      </template>
+                      <span v-else class="text-slate-500 text-sm">暂无数据</span>
+                    </div>
+                  </div>
+
+                  <!-- 历史操作统计 -->
+                  <div v-if="dashboardStats.history_stats" class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                    <h3 class="text-sm font-medium text-slate-200 mb-3">操作历史统计</h3>
+                    <div class="space-y-2">
+                      <div class="flex items-center justify-between text-sm">
+                        <span class="text-slate-400">总操作次数</span>
+                        <span class="text-slate-200 font-medium">{{ dashboardStats.history_stats.total_operations }}</span>
+                      </div>
+                      <div class="flex items-center justify-between text-sm">
+                        <span class="text-slate-400">近7天操作</span>
+                        <span class="text-emerald-400 font-medium">{{ dashboardStats.history_stats.last_7_days }}</span>
+                      </div>
+                      <div class="mt-3 pt-3 border-t border-white/5">
+                        <div class="text-xs text-slate-500 mb-2">操作类型分布</div>
+                        <div class="flex flex-wrap gap-2">
+                          <span
+                            v-for="(count, type) in dashboardStats.history_stats.by_type"
+                            :key="type"
+                            class="inline-flex items-center gap-1 px-2 py-1 rounded text-xs"
+                            :class="[
+                              type === 'execute' ? 'bg-emerald-500/10 text-emerald-300' :
+                              type === 'undo' ? 'bg-sky-500/10 text-sky-300' :
+                              type === 'deduplicate' ? 'bg-amber-500/10 text-amber-300' :
+                              type === 'rename' ? 'bg-fuchsia-500/10 text-fuchsia-300' :
+                              'bg-slate-500/10 text-slate-300'
+                            ]"
+                          >
+                            {{ getHistoryTypeLabels(type) }}: {{ count }}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 炼金数据提示 -->
+              <div class="p-4 rounded-lg bg-gradient-to-r from-amber-500/5 to-rose-500/5 border border-amber-400/20">
+                <div class="flex items-start gap-3">
+                  <Sparkles :size="18" class="text-amber-400 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p class="text-sm text-slate-200 font-medium">炼金数据洞察</p>
+                    <p class="text-xs text-slate-400 mt-1">
+                      数据可视化帮助您更清晰地了解目录结构。结合"规则模板"和"AI炼金计划"，
+                      可以针对特定类型的文件制定更精准的整理策略。
+                      <span class="text-amber-400">文件类型分布图</span>和
+                      <span class="text-sky-400">大小分布图</span>是制定整理计划的重要参考。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

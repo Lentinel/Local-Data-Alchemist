@@ -243,6 +243,146 @@ class RenameExecuteRequest(BaseModel):
     rename_plan: list[dict]
 
 
+class DashboardStatsRequest(BaseModel):
+    target_path: str
+
+
+def get_file_modification_time(file_path: Path) -> date | None:
+    try:
+        timestamp = file_path.stat().st_mtime
+        return date.fromtimestamp(timestamp)
+    except (OSError, Exception):
+        return None
+
+
+def calculate_dashboard_stats(
+    target_dir: Path,
+    files_info: list[dict],
+    include_history: bool = True
+) -> dict:
+    total_files = len(files_info)
+    total_size = sum(f.get("size", 0) for f in files_info)
+    
+    category_stats = {
+        "images": {"count": 0, "size": 0},
+        "documents": {"count": 0, "size": 0},
+        "archives": {"count": 0, "size": 0},
+        "code": {"count": 0, "size": 0},
+        "logs": {"count": 0, "size": 0},
+        "unknown": {"count": 0, "size": 0},
+    }
+    
+    extension_counts = {}
+    
+    size_buckets = {
+        "tiny": {"count": 0, "size": 0, "label": "< 100KB"},
+        "small": {"count": 0, "size": 0, "label": "100KB - 1MB"},
+        "medium": {"count": 0, "size": 0, "label": "1MB - 10MB"},
+        "large": {"count": 0, "size": 0, "label": "10MB - 100MB"},
+        "huge": {"count": 0, "size": 0, "label": "> 100MB"},
+    }
+    
+    today = date.today()
+    week_dates = []
+    for i in range(6, -1, -1):
+        week_dates.append(today - timedelta(days=i))
+    
+    weekly_stats = {}
+    for d in week_dates:
+        weekly_stats[d.isoformat()] = {"count": 0, "size": 0, "date": d.isoformat()}
+    
+    for file_info in files_info:
+        category = file_info.get("category", "unknown")
+        size = file_info.get("size", 0)
+        extension = file_info.get("extension", "").lower()
+        
+        if category in category_stats:
+            category_stats[category]["count"] += 1
+            category_stats[category]["size"] += size
+        
+        if extension:
+            if extension not in extension_counts:
+                extension_counts[extension] = {"count": 0, "size": 0}
+            extension_counts[extension]["count"] += 1
+            extension_counts[extension]["size"] += size
+        
+        if size < 100 * 1024:
+            size_buckets["tiny"]["count"] += 1
+            size_buckets["tiny"]["size"] += size
+        elif size < 1024 * 1024:
+            size_buckets["small"]["count"] += 1
+            size_buckets["small"]["size"] += size
+        elif size < 10 * 1024 * 1024:
+            size_buckets["medium"]["count"] += 1
+            size_buckets["medium"]["size"] += size
+        elif size < 100 * 1024 * 1024:
+            size_buckets["large"]["count"] += 1
+            size_buckets["large"]["size"] += size
+        else:
+            size_buckets["huge"]["count"] += 1
+            size_buckets["huge"]["size"] += size
+        
+        file_path = resolve_inside_target(target_dir, file_info.get("path", ""))
+        if file_path.exists():
+            mod_date = get_file_modification_time(file_path)
+            if mod_date:
+                date_str = mod_date.isoformat()
+                if date_str in weekly_stats:
+                    weekly_stats[date_str]["count"] += 1
+                    weekly_stats[date_str]["size"] += size
+    
+    top_extensions = sorted(
+        extension_counts.items(),
+        key=lambda x: x[1]["count"],
+        reverse=True
+    )[:10]
+    
+    history_stats = None
+    if include_history:
+        history_list = list_history(target_dir)
+        history_stats = {
+            "total_operations": len(history_list),
+            "by_type": {},
+            "last_7_days": 0,
+        }
+        
+        for item in history_list:
+            op_type = item.get("type", "unknown")
+            if op_type not in history_stats["by_type"]:
+                history_stats["by_type"][op_type] = 0
+            history_stats["by_type"][op_type] += 1
+            
+            created_at = item.get("created_at")
+            if created_at:
+                try:
+                    if isinstance(created_at, str):
+                        if "T" in created_at:
+                            item_date = datetime.fromisoformat(created_at).date()
+                        else:
+                            item_date = date.fromisoformat(created_at)
+                    else:
+                        item_date = created_at
+                    
+                    if (today - item_date).days <= 7:
+                        history_stats["last_7_days"] += 1
+                except (ValueError, TypeError):
+                    pass
+    
+    return {
+        "overview": {
+            "total_files": total_files,
+            "total_size": total_size,
+            "categories": category_stats,
+        },
+        "size_distribution": size_buckets,
+        "extension_distribution": {
+            ext: data for ext, data in top_extensions
+        },
+        "weekly_activity": list(weekly_stats.values()),
+        "history_stats": history_stats,
+    }
+
+
 def get_templates_dir() -> Path:
     return Path(__file__).resolve().parent / "templates"
 
@@ -2529,6 +2669,28 @@ async def api_rename_execute(request: RenameExecuteRequest):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"执行重命名失败：{str(exc)}") from exc
+
+
+@app.post("/dashboard_stats")
+@app.post("/api/dashboard_stats")
+async def api_dashboard_stats(request: DashboardStatsRequest):
+    try:
+        target_dir = get_target_dir(request.target_path)
+        
+        files_info = scan_target_files(target_dir)
+        
+        stats = calculate_dashboard_stats(target_dir, files_info)
+        
+        return {
+            "status": "success",
+            "target_path": str(target_dir),
+            "stats": stats,
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"生成仪表盘统计失败：{str(exc)}") from exc
 
 
 @app.get("/")
