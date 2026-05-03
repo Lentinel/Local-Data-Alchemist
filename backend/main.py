@@ -1658,12 +1658,86 @@ def apply_template_to_files(template: dict, files_info: list[dict], target_dir: 
     return plan
 
 
+WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+    "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+}
+
+WINDOWS_INVALID_CHARS = set(r'\/:*?"<>|')
+
+MAX_FILENAME_LENGTH = 255
+
+
+def validate_filename(filename: str) -> tuple[bool, str | None]:
+    if not filename or not filename.strip():
+        return False, "文件名为空"
+    
+    for char in filename:
+        if char in WINDOWS_INVALID_CHARS:
+            return False, f"包含非法字符: {repr(char)}"
+    
+    name_without_ext = Path(filename).stem.upper()
+    if name_without_ext in WINDOWS_RESERVED_NAMES:
+        return False, f"包含 Windows 保留名称: {name_without_ext}"
+    
+    for reserved in WINDOWS_RESERVED_NAMES:
+        if name_without_ext.startswith(f"{reserved}."):
+            return False, f"包含 Windows 保留名称: {reserved}"
+    
+    if filename.endswith(".") or filename.endswith(" "):
+        return False, "文件名不能以点或空格结尾"
+    
+    if len(filename) > MAX_FILENAME_LENGTH:
+        return False, f"文件名过长 ({len(filename)} > {MAX_FILENAME_LENGTH})"
+    
+    if not name_without_ext.strip():
+        return False, "文件名主体部分为空（如 .hidden 格式仅隐藏文件可用）"
+    
+    return True, None
+
+
+def sanitize_filename(name: str, fallback_prefix: str = "file") -> str:
+    if not name or not name.strip():
+        return f"{fallback_prefix}_sanitized"
+    
+    sanitized = []
+    for char in name:
+        if char in WINDOWS_INVALID_CHARS:
+            sanitized.append("_")
+        else:
+            sanitized.append(char)
+    
+    sanitized = "".join(sanitized)
+    
+    while sanitized.endswith(".") or sanitized.endswith(" "):
+        sanitized = sanitized[:-1]
+    
+    if not sanitized or not Path(sanitized).stem.strip():
+        return f"{fallback_prefix}_sanitized"
+    
+    stem = Path(sanitized).stem.upper()
+    if stem in WINDOWS_RESERVED_NAMES:
+        sanitized = f"{sanitized}_renamed"
+    
+    if len(sanitized) > MAX_FILENAME_LENGTH:
+        extension = Path(sanitized).suffix
+        max_stem_length = MAX_FILENAME_LENGTH - len(extension) - 1
+        if max_stem_length < 1:
+            max_stem_length = 1
+        stem = Path(sanitized).stem[:max_stem_length]
+        sanitized = stem + extension
+    
+    return sanitized
+
+
 def apply_rename_rules(
     original_name: str,
     rules: list[RenameRule],
     index: int = 0,
-    total_count: int = 1
-) -> str:
+    total_count: int = 1,
+    sanitize: bool = True
+) -> tuple[str, str | None]:
     name_stem = Path(original_name).stem
     extension = Path(original_name).suffix
     current_name = name_stem
@@ -1720,7 +1794,18 @@ def apply_rename_rules(
             current_name = current_name + separator + today
     
     final_name = current_name + extension
-    return final_name
+    
+    is_valid, error_reason = validate_filename(final_name)
+    
+    if not is_valid and sanitize:
+        sanitized_name = sanitize_filename(final_name, fallback_prefix=name_stem or "file")
+        if sanitized_name != final_name:
+            return sanitized_name, f"自动修正: {error_reason}"
+    
+    if not is_valid:
+        return final_name, error_reason
+    
+    return final_name, None
 
 
 def generate_rename_preview(
@@ -1730,6 +1815,7 @@ def generate_rename_preview(
 ) -> dict:
     results = []
     conflicts = []
+    warnings = []
     new_names = set()
     file_info_map = {}
     
@@ -1749,7 +1835,7 @@ def generate_rename_preview(
     
     for index, (file_path, info) in enumerate(sorted_files):
         original_name = info["original_name"]
-        new_name = apply_rename_rules(
+        new_name, validation_warning = apply_rename_rules(
             original_name,
             rules,
             index,
@@ -1768,6 +1854,7 @@ def generate_rename_preview(
                 conflict = True
                 conflicts.append({
                     "file": file_path,
+                    "original_name": original_name,
                     "new_name": new_name,
                     "reason": "与其他重命名文件冲突"
                 })
@@ -1777,11 +1864,20 @@ def generate_rename_preview(
                 conflict = True
                 conflicts.append({
                     "file": file_path,
+                    "original_name": original_name,
                     "new_name": new_name,
                     "reason": "目标文件已存在"
                 })
             
             new_names.add(new_name)
+        
+        if validation_warning:
+            warnings.append({
+                "file": file_path,
+                "original_name": original_name,
+                "new_name": new_name,
+                "warning": validation_warning
+            })
         
         results.append({
             "original_path": file_path,
@@ -1790,6 +1886,8 @@ def generate_rename_preview(
             "new_path": new_path,
             "has_change": new_name != original_name,
             "conflict": conflict,
+            "validation_warning": validation_warning,
+            "sanitized": validation_warning and validation_warning.startswith("自动修正"),
             "index": index
         })
     
@@ -1797,7 +1895,9 @@ def generate_rename_preview(
         "status": "success",
         "previews": results,
         "conflicts": conflicts,
+        "warnings": warnings,
         "has_conflicts": len(conflicts) > 0,
+        "has_warnings": len(warnings) > 0,
         "total_files": len(results),
         "changed_count": sum(1 for r in results if r["has_change"])
     }
@@ -1816,6 +1916,7 @@ def execute_rename_plan(
     
     results = []
     snapshot_operations = []
+    errors = []
     
     valid_plans = [p for p in rename_plan if p.get("has_change") and not p.get("conflict")]
     
@@ -1824,47 +1925,113 @@ def execute_rename_plan(
         new_path = item.get("new_path")
         
         if not original_path or not new_path:
-            continue
-        
-        source_path = resolve_inside_target(target_dir, original_path)
-        dest_path = resolve_inside_target(target_dir, new_path)
-        
-        if not source_path.exists():
             results.append({
                 "original_path": original_path,
                 "new_path": new_path,
                 "status": "skipped",
-                "message": "源文件不存在"
+                "message": "缺少必要的路径参数"
             })
             continue
         
-        if dest_path.exists() and new_path != original_path:
+        try:
+            original_name = Path(original_path).name
+            new_name = Path(new_path).name
+            
+            if new_name != original_name:
+                is_valid, error_reason = validate_filename(new_name)
+                if not is_valid:
+                    sanitized_name = sanitize_filename(new_name, fallback_prefix=Path(original_name).stem or "file")
+                    if sanitized_name != new_name:
+                        parent_dir = Path(new_path).parent
+                        if parent_dir == Path("."):
+                            new_path = sanitized_name
+                        else:
+                            new_path = str(parent_dir / sanitized_name)
+                        
+                        errors.append({
+                            "original_path": original_path,
+                            "original_name": original_name,
+                            "original_new_name": new_name,
+                            "corrected_name": sanitized_name,
+                            "reason": error_reason
+                        })
+            
+            source_path = resolve_inside_target(target_dir, original_path)
+            dest_path = resolve_inside_target(target_dir, new_path)
+            
+            if not source_path.exists():
+                results.append({
+                    "original_path": original_path,
+                    "new_path": new_path,
+                    "status": "skipped",
+                    "message": "源文件不存在"
+                })
+                continue
+            
+            if dest_path.exists() and new_path != original_path:
+                results.append({
+                    "original_path": original_path,
+                    "new_path": new_path,
+                    "status": "skipped",
+                    "message": "目标路径已存在"
+                })
+                continue
+            
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            try:
+                shutil.move(str(source_path), str(dest_path))
+            except OSError as e:
+                error_msg = str(e)
+                if "already exists" in error_msg.lower() or "exists" in error_msg.lower():
+                    results.append({
+                        "original_path": original_path,
+                        "new_path": new_path,
+                        "status": "skipped",
+                        "message": f"目标文件已存在: {error_msg}"
+                    })
+                elif "permission" in error_msg.lower():
+                    results.append({
+                        "original_path": original_path,
+                        "new_path": new_path,
+                        "status": "error",
+                        "message": f"权限不足: {error_msg}"
+                    })
+                else:
+                    results.append({
+                        "original_path": original_path,
+                        "new_path": new_path,
+                        "status": "error",
+                        "message": f"重命名失败: {error_msg}"
+                    })
+                continue
+            
+            snapshot_operations.append({
+                "action": "rename_and_move",
+                "original_path": original_path,
+                "new_path": new_path,
+            })
+            
+            results.append({
+                "original_path": original_path,
+                "original_name": Path(original_path).name,
+                "new_path": new_path,
+                "new_name": Path(new_path).name,
+                "status": "success",
+                "absolute_original_path": str(source_path),
+                "absolute_new_path": str(dest_path),
+            })
+        except Exception as e:
             results.append({
                 "original_path": original_path,
                 "new_path": new_path,
-                "status": "skipped",
-                "message": "目标路径已存在"
+                "status": "error",
+                "message": f"处理失败: {str(e)}"
             })
-            continue
-        
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(source_path), str(dest_path))
-        
-        snapshot_operations.append({
-            "action": "rename_and_move",
-            "original_path": original_path,
-            "new_path": new_path,
-        })
-        
-        results.append({
-            "original_path": original_path,
-            "original_name": Path(original_path).name,
-            "new_path": new_path,
-            "new_name": Path(new_path).name,
-            "status": "success",
-            "absolute_original_path": str(source_path),
-            "absolute_new_path": str(dest_path),
-        })
+            errors.append({
+                "original_path": original_path,
+                "error": str(e)
+            })
     
     if snapshot_operations:
         write_snapshot(target_dir, snapshot_operations)
@@ -1885,6 +2052,8 @@ def execute_rename_plan(
         "executed": len([r for r in results if r["status"] == "success"]),
         "total": len(results),
         "results": results,
+        "errors": errors,
+        "has_errors": len(errors) > 0,
         "snapshot_path": str(snapshot_path),
         "history_id": history_id if snapshot_operations else None,
     }
