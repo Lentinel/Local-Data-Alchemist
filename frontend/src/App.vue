@@ -3,11 +3,16 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import axios from 'axios'
 import {
   AlertCircle,
+  AlertTriangle,
+  ArrowRight,
   BarChart3,
+  Check,
   CheckCircle,
   FileText,
   FolderOpen,
+  HardDrive,
   Loader2,
+  Shield,
   Sparkles,
   Eye,
   X,
@@ -16,7 +21,6 @@ import {
   ChevronDown,
   Star,
   Clock,
-  HardDrive,
   Copy,
   Settings,
   Trash2,
@@ -131,7 +135,7 @@ const isMultiMode = ref(false)
 const isShowingPlanPreview = ref(false)
 const isLoadingPreview = ref(false)
 const planPreviewData = ref(null)
-const previewError = ref(null)
+const planPreviewError = ref(null)
 const needFinalConfirmation = ref(false)
 const finalConfirmChecked = ref(false)
 
@@ -476,6 +480,52 @@ const formatBytes = (bytes) => {
   return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`
 }
 
+const extractErrorMessage = (error) => {
+  if (!error) {
+    return '未知错误'
+  }
+
+  if (error.response) {
+    if (error.response.data && error.response.data.detail) {
+      return error.response.data.detail
+    }
+    
+    const status = error.response.status
+    switch (status) {
+      case 400:
+        return '请求参数错误，请检查输入'
+      case 404:
+        return '请求的资源不存在'
+      case 409:
+        return error.response.data?.detail || '操作冲突，请重试'
+      case 500:
+        return '服务器内部错误，请稍后再试'
+      case 502:
+      case 503:
+      case 504:
+        return '服务器暂时不可用，请稍后再试'
+      default:
+        return `请求失败 (状态码: ${status})`
+    }
+  }
+
+  if (error.request) {
+    if (error.code === 'ECONNABORTED') {
+      return '请求超时，请检查网络连接后重试'
+    }
+    if (error.code === 'ERR_NETWORK' || error.message?.includes('Network Error')) {
+      return '网络连接失败，请检查后端服务是否启动'
+    }
+    return '无法连接到服务器，请检查网络连接'
+  }
+
+  if (error.message) {
+    return error.message
+  }
+
+  return '未知错误'
+}
+
 const openNativeFolderDialog = async () => {
   addLog('[系统] 请求系统原生目录选择器...', 'info')
   error.value = null
@@ -594,7 +644,7 @@ const loadPlanPreview = async () => {
   }
 
   isLoadingPreview.value = true
-  previewError.value = null
+  planPreviewError.value = null
 
   try {
     addLog('[安全] 正在执行计划预检查...', 'info')
@@ -622,8 +672,8 @@ const loadPlanPreview = async () => {
 
     return true
   } catch (err) {
-    previewError.value = err.response?.data?.detail || '计划预检查失败'
-    addLog(`[错误] 计划预检查失败: ${previewError.value}`, 'error')
+    planPreviewError.value = err.response?.data?.detail || '计划预检查失败'
+    addLog(`[错误] 计划预检查失败: ${planPreviewError.value}`, 'error')
     console.error('Preview plan error:', err)
     return false
   } finally {
@@ -691,7 +741,7 @@ const executePlanDirectly = async () => {
 const cancelPlanPreview = () => {
   isShowingPlanPreview.value = false
   planPreviewData.value = null
-  previewError.value = null
+  planPreviewError.value = null
   needFinalConfirmation.value = false
   finalConfirmChecked.value = false
 }
