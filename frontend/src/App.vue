@@ -116,6 +116,17 @@ const isLoadingDashboard = ref(false)
 const dashboardStats = ref(null)
 const dashboardError = ref(null)
 
+// 多目录批量处理
+const isShowingMultiTargets = ref(false)
+const isMultiScanning = ref(false)
+const isMultiGeneratingPlan = ref(false)
+const multiTargets = ref([])
+const multiScanResults = ref([])
+const multiPlanResults = ref([])
+const multiError = ref(null)
+const newMultiTargetPath = ref('')
+const isMultiMode = ref(false)
+
 const CATEGORY_COLORS = {
   images: '#10b981',
   documents: '#3b82f6',
@@ -1595,6 +1606,164 @@ const getWeeklyActivityData = () => {
   return dashboardStats.value.weekly_activity
 }
 
+// 多目录批量处理方法
+const showMultiTargets = () => {
+  isShowingMultiTargets.value = true
+  multiTargets.value = []
+  multiScanResults.value = []
+  multiPlanResults.value = []
+  multiError.value = null
+  isMultiMode.value = false
+}
+
+const hideMultiTargets = () => {
+  isShowingMultiTargets.value = false
+  if (!isMultiMode.value) {
+    multiTargets.value = []
+    multiScanResults.value = []
+    multiPlanResults.value = []
+    multiError.value = null
+  }
+}
+
+const addMultiTarget = () => {
+  const path = newMultiTargetPath.value.trim()
+  if (!path) {
+    return
+  }
+  
+  if (multiTargets.value.includes(path)) {
+    multiError.value = '该目录已添加'
+    return
+  }
+  
+  multiTargets.value.push(path)
+  newMultiTargetPath.value = ''
+  multiError.value = null
+}
+
+const removeMultiTarget = (index) => {
+  multiTargets.value.splice(index, 1)
+}
+
+const addMultiTargetViaDialog = async () => {
+  addLog('[系统] 请求系统原生目录选择器...', 'info')
+  
+  try {
+    const response = await axios.get('/api/select_folder')
+    if (response.data.status === 'cancelled' || !response.data.target_path) {
+      addLog('[系统] 目录选择已取消', 'info')
+      return
+    }
+
+    const path = response.data.target_path
+    if (multiTargets.value.includes(path)) {
+      multiError.value = '该目录已添加'
+      return
+    }
+    
+    multiTargets.value.push(path)
+    addLog(`[系统] 已添加目录: ${path}`, 'info')
+    multiError.value = null
+  } catch (err) {
+    multiError.value = err.response?.data?.detail || '添加目录失败'
+    addLog(`[错误] 添加目录失败: ${multiError.value}`, 'error')
+  }
+}
+
+const performMultiScan = async () => {
+  if (multiTargets.value.length === 0) {
+    multiError.value = '请至少添加一个目标目录'
+    return
+  }
+
+  isMultiScanning.value = true
+  multiError.value = null
+
+  try {
+    addLog('[系统] 正在执行多目录扫描...', 'info')
+
+    const response = await axios.post('/api/multi_scan', {
+      target_paths: multiTargets.value
+    })
+
+    if (response.data.status === 'success') {
+      multiScanResults.value = response.data
+      isMultiMode.value = true
+      
+      addLog(`[系统] 多目录扫描完成：${response.data.success_count} 个目录成功，${response.data.total_files} 个文件`, 'info')
+      
+      files.value = response.data.merged_files
+      fileInventory.value = response.data.merged_file_inventory
+      analysis.value = response.data.merged_analysis
+      
+      targetPath.value = response.data.merged_analysis?.target_paths?.[0] || multiTargets.value[0]
+    } else {
+      multiError.value = '多目录扫描失败：服务器返回错误状态'
+      addLog(`[错误] 多目录扫描失败: ${multiError.value}`, 'error')
+    }
+  } catch (err) {
+    multiError.value = err.response?.data?.detail || '多目录扫描失败，请稍后再试'
+    addLog(`[错误] 多目录扫描失败: ${multiError.value}`, 'error')
+    console.error('Multi scan error:', err)
+  } finally {
+    isMultiScanning.value = false
+  }
+}
+
+const performMultiGeneratePlan = async () => {
+  if (multiTargets.value.length === 0) {
+    multiError.value = '请至少添加一个目标目录'
+    return
+  }
+
+  isMultiGeneratingPlan.value = true
+  multiError.value = null
+
+  try {
+    addLog('[系统] 正在为多目录生成炼金计划...', 'info')
+
+    const response = await axios.post('/api/multi_generate_plan', {
+      target_paths: multiTargets.value
+    })
+
+    if (response.data.status === 'success') {
+      multiPlanResults.value = response.data
+      isMultiMode.value = true
+      
+      addLog(`[系统] 多目录计划生成完成：${response.data.success_count} 个目录成功，共 ${response.data.total_actions} 条行动`, 'info')
+      
+      actionPlan.value = response.data.merged_plan
+      mode.value = response.data.mode || 'multi-directory-plan'
+      
+      files.value = []
+      fileInventory.value = []
+      
+      for (const result of response.data.plan_results) {
+        if (result.status === 'success' && result.files) {
+          files.value = [...files.value, ...result.files]
+        }
+        if (result.status === 'success' && result.file_inventory) {
+          fileInventory.value = [...fileInventory.value, ...result.file_inventory]
+        }
+      }
+      
+      if (response.data.llm_failed_count > 0) {
+        addLog(`[警告] 有 ${response.data.llm_failed_count} 个目录的AI计划生成失败`, 'warning')
+      }
+    } else {
+      multiError.value = '多目录计划生成失败：服务器返回错误状态'
+      addLog(`[错误] 多目录计划生成失败: ${multiError.value}`, 'error')
+    }
+  } catch (err) {
+    multiError.value = err.response?.data?.detail || '多目录计划生成失败，请稍后再试'
+    addLog(`[错误] 多目录计划生成失败: ${multiError.value}`, 'error')
+    console.error('Multi generate plan error:', err)
+  } finally {
+    isMultiGeneratingPlan.value = false
+  }
+}
+
 const getHistoryTypeLabels = (type) => {
   const labels = {
     execute: '执行计划',
@@ -2108,6 +2277,14 @@ const getHistoryTypeLabels = (type) => {
               @click="showDashboard"
             >
               📊 数据可视化
+            </button>
+            <button
+              type="button"
+              class="rounded-lg border border-emerald-400/30 px-4 py-2 text-emerald-100 bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors text-sm"
+              :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
+              @click="showMultiTargets"
+            >
+              📂 多目录处理
             </button>
           </div>
         </div>
@@ -3789,6 +3966,388 @@ const getHistoryTypeLabels = (type) => {
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 多目录批量处理弹窗 -->
+      <div v-if="isShowingMultiTargets" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
+        <div class="relative w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
+          <!-- 弹窗头部 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10 bg-gradient-to-r from-emerald-500/5 to-cyan-500/5">
+            <div class="flex items-center gap-3">
+              <HardDrive :size="24" class="text-emerald-400" />
+              <div>
+                <p class="font-medium text-slate-100">多目录批量处理</p>
+                <p class="text-xs text-slate-400 font-mono">
+                  <template v-if="multiTargets.length > 0">
+                    已选择 {{ multiTargets.length }} 个目录
+                    <template v-if="multiScanResults.success_count">
+                      · 共 {{ multiScanResults.total_files }} 个文件
+                    </template>
+                    <template v-else-if="multiPlanResults.success_count">
+                      · 共 {{ multiPlanResults.total_actions }} 条行动
+                    </template>
+                  </template>
+                  <template v-else>
+                    请添加要批量处理的目录
+                  </template>
+                </p>
+              </div>
+            </div>
+            <div class="flex items-center gap-2">
+              <button
+                v-if="multiTargets.length > 0 && !isMultiMode"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-emerald-400/30 bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors text-emerald-100 text-xs"
+                :disabled="isMultiScanning"
+                @click="performMultiScan"
+              >
+                仅扫描
+              </button>
+              <button
+                v-if="multiTargets.length > 0"
+                type="button"
+                class="px-3 py-1.5 rounded-lg border border-fuchsia-400/30 bg-fuchsia-500/10 hover:bg-fuchsia-500/20 transition-colors text-fuchsia-100 text-xs"
+                :disabled="isMultiScanning || isMultiGeneratingPlan"
+                @click="performMultiGeneratePlan"
+              >
+                {{ isMultiGeneratingPlan ? '生成中...' : '生成AI计划' }}
+              </button>
+              <button
+                type="button"
+                class="p-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors"
+                @click="hideMultiTargets"
+                title="关闭"
+              >
+                <X :size="20" class="text-slate-300" />
+              </button>
+            </div>
+          </div>
+
+          <!-- 弹窗内容 -->
+          <div class="flex-1 overflow-auto p-4">
+            <!-- 错误显示 -->
+            <div v-if="multiError" class="flex items-center gap-3 p-4 rounded-lg bg-red-500/10 border border-red-500/20 text-red-400 mb-4">
+              <AlertCircle :size="20" />
+              <p>{{ multiError }}</p>
+            </div>
+
+            <!-- 加载中 -->
+            <div v-if="isMultiScanning || isMultiGeneratingPlan" class="flex items-center justify-center h-48">
+              <div class="flex flex-col items-center gap-4 text-slate-400">
+                <div class="flex items-center gap-3">
+                  <Loader2 :size="24" class="animate-spin text-emerald-400" />
+                  <p class="text-sm">
+                    {{ isMultiScanning ? '正在扫描多目录...' : '正在为多目录生成AI计划...' }}
+                  </p>
+                </div>
+                <div class="w-64 h-2 bg-slate-800 rounded-full overflow-hidden">
+                  <div class="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-full animate-pulse" style="width: 60%;" />
+                </div>
+              </div>
+            </div>
+
+            <!-- 扫描结果展示 -->
+            <div v-else-if="isMultiMode && multiScanResults.merged_analysis" class="space-y-4">
+              <div class="p-4 rounded-lg bg-slate-950/70 border border-emerald-400/20">
+                <h3 class="text-sm font-medium text-emerald-300 mb-3 flex items-center gap-2">
+                  <CheckCircle :size="16" />
+                  多目录扫描完成
+                </h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div class="p-3 rounded-lg bg-slate-900/50 border border-white/5">
+                    <p class="text-xs text-slate-400">目录总数</p>
+                    <p class="text-xl font-bold text-slate-100">{{ multiScanResults.success_count }}</p>
+                  </div>
+                  <div class="p-3 rounded-lg bg-slate-900/50 border border-white/5">
+                    <p class="text-xs text-slate-400">文件总数</p>
+                    <p class="text-xl font-bold text-slate-100">{{ multiScanResults.total_files }}</p>
+                  </div>
+                  <div class="p-3 rounded-lg bg-slate-900/50 border border-white/5">
+                    <p class="text-xs text-slate-400">总大小</p>
+                    <p class="text-xl font-bold text-slate-100">{{ formatBytes(multiScanResults.total_size) }}</p>
+                  </div>
+                  <div class="p-3 rounded-lg bg-slate-900/50 border border-white/5">
+                    <p class="text-xs text-slate-400">失败目录</p>
+                    <p class="text-xl font-bold" :class="multiScanResults.failed_count > 0 ? 'text-red-400' : 'text-slate-100'">
+                      {{ multiScanResults.failed_count }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 各目录详情 -->
+              <div class="space-y-2">
+                <h4 class="text-sm text-slate-400">各目录详情</h4>
+                <div
+                  v-for="(result, index) in multiScanResults.results"
+                  :key="index"
+                  class="p-3 rounded-lg border transition-colors"
+                  :class="[
+                    result.status === 'success'
+                      ? 'bg-slate-950/70 border-emerald-400/20'
+                      : 'bg-red-500/5 border-red-400/20'
+                  ]"
+                >
+                  <div class="flex items-start justify-between">
+                    <div class="flex items-start gap-2">
+                      <div
+                        class="p-1 rounded mt-0.5"
+                        :class="result.status === 'success' ? 'bg-emerald-500/10' : 'bg-red-500/10'"
+                      >
+                        <CheckCircle
+                          v-if="result.status === 'success'"
+                          :size="14"
+                          class="text-emerald-400"
+                        />
+                        <AlertCircle
+                          v-else
+                          :size="14"
+                          class="text-red-400"
+                        />
+                      </div>
+                      <div>
+                        <p class="text-sm text-slate-200 font-mono break-all">{{ result.target_path }}</p>
+                        <p v-if="result.status === 'success'" class="text-xs text-slate-500 mt-1">
+                          {{ result.file_count }} 个文件 · {{ formatBytes(result.total_size) }}
+                        </p>
+                        <p v-else class="text-xs text-red-400 mt-1">
+                          错误: {{ result.error }}
+                        </p>
+                      </div>
+                    </div>
+                    <span
+                      class="inline-flex px-2 py-0.5 rounded text-xs font-medium"
+                      :class="[
+                        result.status === 'success'
+                          ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-400/20'
+                          : 'text-red-300 bg-red-500/10 border border-red-400/20'
+                      ]"
+                    >
+                      {{ result.status === 'success' ? '成功' : '失败' }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="p-3 rounded-lg bg-emerald-500/5 border border-emerald-400/20">
+                <p class="text-xs text-slate-400">
+                  💡 提示：扫描完成后，文件已合并到主列表。可以继续使用现有的"规则模板"、"AI炼金计划"等功能，或点击"生成AI计划"为多目录生成统一的整理计划。
+                </p>
+              </div>
+            </div>
+
+            <!-- 计划生成结果展示 -->
+            <div v-else-if="isMultiMode && multiPlanResults.merged_plan" class="space-y-4">
+              <div class="p-4 rounded-lg bg-slate-950/70 border border-fuchsia-400/20">
+                <h3 class="text-sm font-medium text-fuchsia-300 mb-3 flex items-center gap-2">
+                  <Sparkles :size="16" />
+                  多目录计划生成完成
+                </h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div class="p-3 rounded-lg bg-slate-900/50 border border-white/5">
+                    <p class="text-xs text-slate-400">成功目录</p>
+                    <p class="text-xl font-bold text-slate-100">{{ multiPlanResults.success_count }}</p>
+                  </div>
+                  <div class="p-3 rounded-lg bg-slate-900/50 border border-white/5">
+                    <p class="text-xs text-slate-400">LLM失败</p>
+                    <p class="text-xl font-bold" :class="multiPlanResults.llm_failed_count > 0 ? 'text-amber-400' : 'text-slate-100'">
+                      {{ multiPlanResults.llm_failed_count }}
+                    </p>
+                  </div>
+                  <div class="p-3 rounded-lg bg-slate-900/50 border border-white/5">
+                    <p class="text-xs text-slate-400">总文件数</p>
+                    <p class="text-xl font-bold text-slate-100">{{ multiPlanResults.total_files }}</p>
+                  </div>
+                  <div class="p-3 rounded-lg bg-slate-900/50 border border-white/5">
+                    <p class="text-xs text-slate-400">行动总数</p>
+                    <p class="text-xl font-bold text-slate-100">{{ multiPlanResults.total_actions }}</p>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 各目录计划详情 -->
+              <div class="space-y-2">
+                <h4 class="text-sm text-slate-400">各目录计划详情</h4>
+                <div
+                  v-for="(result, index) in multiPlanResults.plan_results"
+                  :key="index"
+                  class="p-3 rounded-lg border transition-colors"
+                  :class="[
+                    result.status === 'success'
+                      ? 'bg-slate-950/70 border-fuchsia-400/20'
+                      : result.status === 'llm_failed'
+                        ? 'bg-amber-500/5 border-amber-400/20'
+                        : 'bg-red-500/5 border-red-400/20'
+                  ]"
+                >
+                  <div class="flex items-start justify-between">
+                    <div class="flex items-start gap-2">
+                      <div
+                        class="p-1 rounded mt-0.5"
+                        :class="[
+                          result.status === 'success'
+                            ? 'bg-fuchsia-500/10'
+                            : result.status === 'llm_failed'
+                              ? 'bg-amber-500/10'
+                              : 'bg-red-500/10'
+                        ]"
+                      >
+                        <CheckCircle
+                          v-if="result.status === 'success'"
+                          :size="14"
+                          class="text-fuchsia-400"
+                        />
+                        <AlertCircle
+                          v-else-if="result.status === 'llm_failed'"
+                          :size="14"
+                          class="text-amber-400"
+                        />
+                        <AlertCircle
+                          v-else
+                          :size="14"
+                          class="text-red-400"
+                        />
+                      </div>
+                      <div>
+                        <p class="text-sm text-slate-200 font-mono break-all">{{ result.target_path }}</p>
+                        <p class="text-xs text-slate-500 mt-1">
+                          {{ result.file_count }} 个文件 · {{ result.action_count }} 条行动
+                        </p>
+                        <p v-if="result.error" class="text-xs" :class="result.status === 'llm_failed' ? 'text-amber-400' : 'text-red-400'" >
+                          {{ result.status === 'llm_failed' ? 'LLM错误: ' : '错误: ' }}{{ result.error }}
+                        </p>
+                      </div>
+                    </div>
+                    <span
+                      class="inline-flex px-2 py-0.5 rounded text-xs font-medium"
+                      :class="[
+                        result.status === 'success'
+                          ? 'text-fuchsia-300 bg-fuchsia-500/10 border border-fuchsia-400/20'
+                          : result.status === 'llm_failed'
+                            ? 'text-amber-300 bg-amber-500/10 border border-amber-400/20'
+                            : 'text-red-300 bg-red-500/10 border border-red-400/20'
+                      ]"
+                    >
+                      {{ result.status === 'success' ? '成功' : result.status === 'llm_failed' ? 'LLM失败' : '失败' }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="p-3 rounded-lg bg-fuchsia-500/5 border border-fuchsia-400/20">
+                <p class="text-xs text-slate-400">
+                  ✨ 计划已生成！关闭此弹窗后，可以在主界面查看完整的整理计划并执行。注意：由于每个目录的结构不同，建议分别检查和执行各目录的计划以确保安全性。
+                </p>
+              </div>
+            </div>
+
+            <!-- 目录添加界面 -->
+            <div v-else class="space-y-4">
+              <!-- 添加目录区域 -->
+              <div class="p-4 rounded-lg bg-slate-950/70 border border-white/10">
+                <h3 class="text-sm font-medium text-slate-200 mb-3">添加目标目录</h3>
+                <div class="flex flex-col md:flex-row gap-3">
+                  <div class="relative flex-1">
+                    <div class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                      <FolderOpen :size="18" />
+                    </div>
+                    <input
+                      type="text"
+                      v-model="newMultiTargetPath"
+                      class="w-full pl-10 pr-4 py-2.5 rounded-lg border border-white/10 bg-slate-950/80 text-slate-200 placeholder:text-slate-500 focus:outline-none focus:border-emerald-400/50 font-mono text-sm"
+                      placeholder="输入目录路径，如 C:\Users\Documents"
+                      @keyup.enter="addMultiTarget"
+                    />
+                  </div>
+                  <div class="flex gap-2">
+                    <button
+                      type="button"
+                      class="px-4 py-2 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+                      @click="addMultiTargetViaDialog"
+                    >
+                      📂 选择目录
+                    </button>
+                    <button
+                      type="button"
+                      class="px-4 py-2 rounded-lg border border-emerald-400/30 bg-emerald-500/10 hover:bg-emerald-500/20 transition-colors text-emerald-200 text-sm"
+                      :disabled="!newMultiTargetPath.trim()"
+                      @click="addMultiTarget"
+                    >
+                      添加
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 已添加目录列表 -->
+              <div v-if="multiTargets.length > 0" class="space-y-2">
+                <h4 class="text-sm text-slate-400">已添加的目录 ({{ multiTargets.length }})</h4>
+                <div class="space-y-2">
+                  <div
+                    v-for="(path, index) in multiTargets"
+                    :key="index"
+                    class="flex items-center justify-between p-3 rounded-lg bg-slate-950/70 border border-white/10 hover:border-emerald-400/30 transition-colors"
+                  >
+                    <div class="flex items-center gap-2 min-w-0">
+                      <div class="p-1.5 rounded bg-emerald-500/10">
+                        <FolderOpen :size="14" class="text-emerald-400" />
+                      </div>
+                      <div class="min-w-0">
+                        <p class="text-sm text-slate-200 font-mono break-all">{{ path }}</p>
+                        <p class="text-xs text-slate-500">#{{ index + 1 }}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      class="p-1.5 rounded hover:bg-red-500/10 text-red-400 opacity-60 hover:opacity-100 transition-opacity"
+                      @click="removeMultiTarget(index)"
+                      title="移除此目录"
+                    >
+                      <X :size="16" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 空状态 -->
+              <div v-else class="flex flex-col items-center justify-center py-12 text-slate-500">
+                <HardDrive :size="48" class="mb-3 text-slate-700" />
+                <p class="text-lg">暂无目录</p>
+                <p class="text-sm mt-1">点击"选择目录"或输入路径添加要批量处理的目录</p>
+              </div>
+
+              <!-- 使用提示 -->
+              <div class="p-3 rounded-lg bg-slate-950/50 border border-white/5">
+                <h4 class="text-xs text-slate-400 font-semibold uppercase mb-2">使用说明</h4>
+                <ul class="text-xs text-slate-500 space-y-1">
+                  <li>• <span class="text-emerald-400">仅扫描</span>：多目录合并扫描，生成统一的文件列表和分析摘要</li>
+                  <li>• <span class="text-fuchsia-400">生成AI计划</span>：为每个目录分别调用LLM生成整理计划，然后合并展示</li>
+                  <li>• 扫描完成后，可以使用现有的"规则模板"快速应用整理规则</li>
+                  <li>• 各目录的执行和回滚是独立的，建议谨慎检查后再执行</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <!-- 弹窗底部 -->
+          <div class="p-4 border-t border-white/10 flex items-center justify-between">
+            <div class="text-xs text-slate-500 font-mono">
+              <template v-if="isMultiMode">
+                💡 已进入多目录模式，关闭弹窗后可在主界面查看合并结果
+              </template>
+              <template v-else>
+                提示：至少需要添加 2 个目录才能体现批量处理的优势
+              </template>
+            </div>
+            <button
+              type="button"
+              class="px-4 py-2 rounded-lg border border-slate-400/20 bg-white/5 hover:bg-white/10 transition-colors text-slate-200 text-sm"
+              @click="hideMultiTargets"
+            >
+              {{ isMultiMode ? '关闭' : '取消' }}
+            </button>
           </div>
         </div>
       </div>

@@ -247,6 +247,14 @@ class DashboardStatsRequest(BaseModel):
     target_path: str
 
 
+class MultiTargetRequest(BaseModel):
+    target_paths: list[str]
+
+
+class MultiExecuteRequest(BaseModel):
+    targets: list[dict]
+
+
 def get_file_modification_time(file_path: Path) -> date | None:
     try:
         timestamp = file_path.stat().st_mtime
@@ -381,6 +389,84 @@ def calculate_dashboard_stats(
         "weekly_activity": list(weekly_stats.values()),
         "history_stats": history_stats,
     }
+
+
+def scan_and_analyze_single_path(
+    target_path: str,
+    index: int = 0
+) -> dict:
+    try:
+        target_dir = get_target_dir(target_path)
+        files_info = scan_target_files(target_dir)
+        analysis_result = build_analysis(files_info)
+        file_snippets = build_file_snippets(target_dir, [FileInfo(**f) for f in files_info])
+        
+        return {
+            "status": "success",
+            "index": index,
+            "target_path": str(target_dir),
+            "files": file_snippets,
+            "file_inventory": files_info,
+            "analysis": analysis_result,
+            "file_count": len(files_info),
+            "total_size": analysis_result.get("total_size", 0) if analysis_result else 0,
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "index": index,
+            "target_path": target_path,
+            "error": str(exc),
+            "files": [],
+            "file_inventory": [],
+            "analysis": None,
+            "file_count": 0,
+            "total_size": 0,
+        }
+
+
+def generate_plan_for_single_path(
+    target_path: str,
+    files_info: list[dict],
+    file_inventory: list[dict],
+    index: int = 0
+) -> dict:
+    try:
+        target_dir = get_target_dir(target_path)
+        
+        files_s = [FileInfo(**f) for f in files_info]
+        
+        files_content = generate_files_content(files_s)
+        prompt = build_prompt(target_dir, files_content, files_info)
+        
+        try:
+            action_plan = call_llm_for_plan(prompt)
+            plan_status = "success"
+            plan_error = None
+        except Exception as llm_exc:
+            action_plan = []
+            plan_status = "llm_failed"
+            plan_error = str(llm_exc)
+        
+        return {
+            "status": plan_status,
+            "index": index,
+            "target_path": str(target_dir),
+            "plan": action_plan,
+            "error": plan_error,
+            "file_count": len(files_info),
+            "action_count": len(action_plan),
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "index": index,
+            "target_path": target_path,
+            "plan": [],
+            "error": str(exc),
+            "file_count": 0,
+            "action_count": 0,
+        }
 
 
 def get_templates_dir() -> Path:
@@ -2691,6 +2777,143 @@ async def api_dashboard_stats(request: DashboardStatsRequest):
         raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"生成仪表盘统计失败：{str(exc)}") from exc
+
+
+@app.post("/multi_scan")
+@app.post("/api/multi_scan")
+async def api_multi_scan(request: MultiTargetRequest):
+    try:
+        if not request.target_paths or len(request.target_paths) == 0:
+            raise HTTPException(status_code=400, detail="至少需要指定一个目标目录")
+        
+        results = []
+        for i, target_path in enumerate(request.target_paths):
+            result = scan_and_analyze_single_path(target_path, i)
+            results.append(result)
+        
+        success_count = sum(1 for r in results if r["status"] == "success")
+        total_files = sum(r["file_count"] for r in results)
+        total_size = sum(r["total_size"] for r in results)
+        
+        all_files = []
+        all_file_inventory = []
+        all_categories = {
+            "images": {"count": 0, "size": 0},
+            "documents": {"count": 0, "size": 0},
+            "archives": {"count": 0, "size": 0},
+            "code": {"count": 0, "size": 0},
+            "logs": {"count": 0, "size": 0},
+            "unknown": {"count": 0, "size": 0},
+        }
+        
+        for result in results:
+            if result["status"] == "success":
+                all_files.extend(result["files"])
+                all_file_inventory.extend([
+                    {**f, "source_path": result["target_path"]}
+                    for f in result["file_inventory"]
+                ])
+                
+                if result["analysis"] and result["analysis"].get("categories"):
+                    for cat in result["analysis"]["categories"]:
+                        key = cat.get("key", "unknown")
+                        if key in all_categories:
+                            all_categories[key]["count"] += cat.get("count", 0)
+                            all_categories[key]["size"] += cat.get("size", 0)
+        
+        merged_analysis = {
+            "mode": "multi-directory-scan",
+            "target_paths": [r["target_path"] for r in results if r["status"] == "success"],
+            "total_files": total_files,
+            "total_size": total_size,
+            "categories": [
+                {"key": k, "count": v["count"], "size": v["size"]}
+                for k, v in all_categories.items()
+                if v["count"] > 0
+            ],
+            "directories_count": success_count,
+        }
+        
+        return {
+            "status": "success",
+            "results": results,
+            "success_count": success_count,
+            "failed_count": len(results) - success_count,
+            "total_files": total_files,
+            "total_size": total_size,
+            "merged_files": all_files,
+            "merged_file_inventory": all_file_inventory,
+            "merged_analysis": merged_analysis,
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"多目录扫描失败：{str(exc)}") from exc
+
+
+@app.post("/multi_generate_plan")
+@app.post("/api/multi_generate_plan")
+async def api_multi_generate_plan(request: MultiTargetRequest):
+    try:
+        if not request.target_paths or len(request.target_paths) == 0:
+            raise HTTPException(status_code=400, detail="至少需要指定一个目标目录")
+        
+        scan_results = []
+        for i, target_path in enumerate(request.target_paths):
+            result = scan_and_analyze_single_path(target_path, i)
+            scan_results.append(result)
+        
+        plan_results = []
+        for i, scan_result in enumerate(scan_results):
+            if scan_result["status"] == "success":
+                plan_result = generate_plan_for_single_path(
+                    scan_result["target_path"],
+                    scan_result["files"],
+                    scan_result["file_inventory"],
+                    i
+                )
+                plan_results.append(plan_result)
+            else:
+                plan_results.append({
+                    "status": "skipped",
+                    "index": i,
+                    "target_path": scan_result["target_path"],
+                    "plan": [],
+                    "error": scan_result.get("error", "扫描失败"),
+                    "file_count": 0,
+                    "action_count": 0,
+                })
+        
+        success_count = sum(1 for r in plan_results if r["status"] == "success")
+        llm_failed_count = sum(1 for r in plan_results if r["status"] == "llm_failed")
+        total_actions = sum(r["action_count"] for r in plan_results)
+        total_files = sum(r["file_count"] for r in plan_results)
+        
+        all_plans = []
+        for result in plan_results:
+            if result["status"] in ["success", "llm_failed"] and result["plan"]:
+                for action in result["plan"]:
+                    all_plans.append({
+                        **action,
+                        "source_path": result["target_path"],
+                    })
+        
+        return {
+            "status": "success",
+            "plan_results": plan_results,
+            "success_count": success_count,
+            "llm_failed_count": llm_failed_count,
+            "total_files": total_files,
+            "total_actions": total_actions,
+            "merged_plan": all_plans,
+            "mode": "multi-directory-plan",
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"多目录计划生成失败：{str(exc)}") from exc
 
 
 @app.get("/")
