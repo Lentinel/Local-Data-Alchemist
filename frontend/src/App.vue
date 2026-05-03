@@ -2272,11 +2272,11 @@ const getHistoryTypeLabels = (type) => {
             </button>
             <button
               type="button"
-              class="rounded-lg border border-amber-400/50 px-4 py-2 text-amber-100 bg-gradient-to-r from-amber-500/10 to-rose-500/10 hover:from-amber-500/20 hover:to-rose-500/20 transition-colors text-sm"
+              class="rounded-lg border border-amber-400/30 px-4 py-2 text-amber-100 bg-amber-500/10 hover:bg-amber-500/20 transition-colors text-sm"
               :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
               @click="showDashboard"
             >
-              📊 数据可视化
+              数据可视化
             </button>
             <button
               type="button"
@@ -2284,7 +2284,7 @@ const getHistoryTypeLabels = (type) => {
               :disabled="isGeneratingPlan || isExecutingPlan || isUndoing"
               @click="showMultiTargets"
             >
-              📂 多目录处理
+              多目录处理
             </button>
           </div>
         </div>
@@ -3646,12 +3646,12 @@ const getHistoryTypeLabels = (type) => {
       <!-- 数据可视化仪表盘弹窗 -->
       <div v-if="isShowingDashboard" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
         <div class="relative w-full max-w-6xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
-          <!-- 弹窗头部 - 金色主题体现炼金感 -->
-          <div class="flex items-center justify-between p-4 border-b border-white/10 bg-gradient-to-r from-amber-500/5 to-rose-500/5">
+          <!-- 弹窗头部 -->
+          <div class="flex items-center justify-between p-4 border-b border-white/10">
             <div class="flex items-center gap-3">
               <BarChart3 :size="24" class="text-amber-400" />
               <div>
-                <p class="font-medium text-slate-100">炼金数据仪表盘</p>
+                <p class="font-medium text-slate-100">数据可视化</p>
                 <p class="text-xs text-slate-400 font-mono">
                   <template v-if="dashboardStats">
                     共 {{ dashboardStats.overview?.total_files || 0 }} 个文件 · 总大小 {{ formatBytes(dashboardStats.overview?.total_size || 0) }}
@@ -3689,10 +3689,10 @@ const getHistoryTypeLabels = (type) => {
               <div class="flex flex-col items-center gap-4 text-slate-400">
                 <div class="flex items-center gap-3">
                   <Loader2 :size="24" class="animate-spin text-amber-400" />
-                  <p class="text-sm">正在炼金数据...</p>
+                  <p class="text-sm">正在生成数据报告...</p>
                 </div>
                 <div class="w-64 h-2 bg-slate-800 rounded-full overflow-hidden">
-                  <div class="h-full bg-gradient-to-r from-amber-500 to-rose-500 rounded-full animate-pulse" style="width: 70%;" />
+                  <div class="h-full bg-amber-500 rounded-full animate-pulse" style="width: 70%;" />
                 </div>
               </div>
             </div>
@@ -3949,22 +3949,6 @@ const getHistoryTypeLabels = (type) => {
                   </div>
                 </div>
               </div>
-
-              <!-- 炼金数据提示 -->
-              <div class="p-4 rounded-lg bg-gradient-to-r from-amber-500/5 to-rose-500/5 border border-amber-400/20">
-                <div class="flex items-start gap-3">
-                  <Sparkles :size="18" class="text-amber-400 mt-0.5 flex-shrink-0" />
-                  <div>
-                    <p class="text-sm text-slate-200 font-medium">炼金数据洞察</p>
-                    <p class="text-xs text-slate-400 mt-1">
-                      数据可视化帮助您更清晰地了解目录结构。结合"规则模板"和"AI炼金计划"，
-                      可以针对特定类型的文件制定更精准的整理策略。
-                      <span class="text-amber-400">文件类型分布图</span>和
-                      <span class="text-sky-400">大小分布图</span>是制定整理计划的重要参考。
-                    </p>
-                  </div>
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -3974,7 +3958,7 @@ const getHistoryTypeLabels = (type) => {
       <div v-if="isShowingMultiTargets" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm">
         <div class="relative w-full max-w-5xl max-h-[90vh] overflow-hidden rounded-lg glass-strong border border-white/10 flex flex-col">
           <!-- 弹窗头部 -->
-          <div class="flex items-center justify-between p-4 border-b border-white/10 bg-gradient-to-r from-emerald-500/5 to-cyan-500/5">
+          <div class="flex items-center justify-between p-4 border-b border-white/10">
             <div class="flex items-center gap-3">
               <HardDrive :size="24" class="text-emerald-400" />
               <div>
@@ -4043,7 +4027,7 @@ const getHistoryTypeLabels = (type) => {
                   </p>
                 </div>
                 <div class="w-64 h-2 bg-slate-800 rounded-full overflow-hidden">
-                  <div class="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 rounded-full animate-pulse" style="width: 60%;" />
+                  <div class="h-full bg-emerald-500 rounded-full animate-pulse" style="width: 60%;" />
                 </div>
               </div>
             </div>

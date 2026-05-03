@@ -2786,8 +2786,58 @@ async def api_multi_scan(request: MultiTargetRequest):
         if not request.target_paths or len(request.target_paths) == 0:
             raise HTTPException(status_code=400, detail="至少需要指定一个目标目录")
         
+        raw_paths = request.target_paths or []
+        processed_paths = []
+        seen_paths = set()
+        ignored_paths_info = []
+        
+        for path in raw_paths:
+            if not path or not isinstance(path, str):
+                ignored_paths_info.append({
+                    "path": path,
+                    "reason": "空路径或非字符串类型"
+                })
+                continue
+            
+            path_stripped = path.strip()
+            if not path_stripped:
+                ignored_paths_info.append({
+                    "path": path,
+                    "reason": "仅包含空白字符"
+                })
+                continue
+            
+            try:
+                normalized_path = str(Path(path_stripped).resolve())
+            except Exception as path_exc:
+                ignored_paths_info.append({
+                    "path": path_stripped,
+                    "reason": f"路径解析失败: {str(path_exc)}"
+                })
+                continue
+            
+            if normalized_path in seen_paths:
+                ignored_paths_info.append({
+                    "path": path_stripped,
+                    "normalized_path": normalized_path,
+                    "reason": "重复路径"
+                })
+                continue
+            
+            seen_paths.add(normalized_path)
+            processed_paths.append(normalized_path)
+        
+        if len(processed_paths) == 0:
+            if len(ignored_paths_info) > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"所有路径都被过滤。原因: {ignored_paths_info[0].get('reason', '未知')}"
+                )
+            else:
+                raise HTTPException(status_code=400, detail="至少需要指定一个有效的目标目录")
+        
         results = []
-        for i, target_path in enumerate(request.target_paths):
+        for i, target_path in enumerate(processed_paths):
             result = scan_and_analyze_single_path(target_path, i)
             results.append(result)
         
@@ -2808,22 +2858,30 @@ async def api_multi_scan(request: MultiTargetRequest):
         
         for result in results:
             if result["status"] == "success":
-                all_files.extend(result["files"])
+                all_files.extend(result.get("files", []))
                 all_file_inventory.extend([
                     {**f, "source_path": result["target_path"]}
-                    for f in result["file_inventory"]
+                    for f in result.get("file_inventory", [])
                 ])
                 
-                if result["analysis"] and result["analysis"].get("categories"):
-                    for cat in result["analysis"]["categories"]:
-                        key = cat.get("key", "unknown")
-                        if key in all_categories:
-                            all_categories[key]["count"] += cat.get("count", 0)
-                            all_categories[key]["size"] += cat.get("size", 0)
+                analysis = result.get("analysis")
+                if analysis and isinstance(analysis, dict):
+                    categories = analysis.get("categories")
+                    if categories and isinstance(categories, list):
+                        for cat in categories:
+                            if isinstance(cat, dict):
+                                key = cat.get("key", "unknown")
+                                if key in all_categories:
+                                    count = cat.get("count", 0)
+                                    size = cat.get("size", 0)
+                                    if isinstance(count, (int, float)):
+                                        all_categories[key]["count"] += count
+                                    if isinstance(size, (int, float)):
+                                        all_categories[key]["size"] += size
         
         merged_analysis = {
             "mode": "multi-directory-scan",
-            "target_paths": [r["target_path"] for r in results if r["status"] == "success"],
+            "target_paths": [r["target_path"] for r in results if r.get("status") == "success"],
             "total_files": total_files,
             "total_size": total_size,
             "categories": [
@@ -2832,6 +2890,10 @@ async def api_multi_scan(request: MultiTargetRequest):
                 if v["count"] > 0
             ],
             "directories_count": success_count,
+            "raw_input_paths": raw_paths,
+            "processed_paths_count": len(processed_paths),
+            "ignored_paths_count": len(ignored_paths_info),
+            "ignored_paths": ignored_paths_info if len(ignored_paths_info) <= 10 else ignored_paths_info[:10] + [{"note": f"还有 {len(ignored_paths_info) - 10} 个被忽略的路径未显示"}],
         }
         
         return {
@@ -2859,18 +2921,68 @@ async def api_multi_generate_plan(request: MultiTargetRequest):
         if not request.target_paths or len(request.target_paths) == 0:
             raise HTTPException(status_code=400, detail="至少需要指定一个目标目录")
         
+        raw_paths = request.target_paths or []
+        processed_paths = []
+        seen_paths = set()
+        ignored_paths_info = []
+        
+        for path in raw_paths:
+            if not path or not isinstance(path, str):
+                ignored_paths_info.append({
+                    "path": path,
+                    "reason": "空路径或非字符串类型"
+                })
+                continue
+            
+            path_stripped = path.strip()
+            if not path_stripped:
+                ignored_paths_info.append({
+                    "path": path,
+                    "reason": "仅包含空白字符"
+                })
+                continue
+            
+            try:
+                normalized_path = str(Path(path_stripped).resolve())
+            except Exception as path_exc:
+                ignored_paths_info.append({
+                    "path": path_stripped,
+                    "reason": f"路径解析失败: {str(path_exc)}"
+                })
+                continue
+            
+            if normalized_path in seen_paths:
+                ignored_paths_info.append({
+                    "path": path_stripped,
+                    "normalized_path": normalized_path,
+                    "reason": "重复路径"
+                })
+                continue
+            
+            seen_paths.add(normalized_path)
+            processed_paths.append(normalized_path)
+        
+        if len(processed_paths) == 0:
+            if len(ignored_paths_info) > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"所有路径都被过滤。原因: {ignored_paths_info[0].get('reason', '未知')}"
+                )
+            else:
+                raise HTTPException(status_code=400, detail="至少需要指定一个有效的目标目录")
+        
         scan_results = []
-        for i, target_path in enumerate(request.target_paths):
+        for i, target_path in enumerate(processed_paths):
             result = scan_and_analyze_single_path(target_path, i)
             scan_results.append(result)
         
         plan_results = []
         for i, scan_result in enumerate(scan_results):
-            if scan_result["status"] == "success":
+            if scan_result.get("status") == "success":
                 plan_result = generate_plan_for_single_path(
-                    scan_result["target_path"],
-                    scan_result["files"],
-                    scan_result["file_inventory"],
+                    scan_result.get("target_path"),
+                    scan_result.get("files", []),
+                    scan_result.get("file_inventory", []),
                     i
                 )
                 plan_results.append(plan_result)
@@ -2878,26 +2990,29 @@ async def api_multi_generate_plan(request: MultiTargetRequest):
                 plan_results.append({
                     "status": "skipped",
                     "index": i,
-                    "target_path": scan_result["target_path"],
+                    "target_path": scan_result.get("target_path", "unknown"),
                     "plan": [],
                     "error": scan_result.get("error", "扫描失败"),
                     "file_count": 0,
                     "action_count": 0,
                 })
         
-        success_count = sum(1 for r in plan_results if r["status"] == "success")
-        llm_failed_count = sum(1 for r in plan_results if r["status"] == "llm_failed")
-        total_actions = sum(r["action_count"] for r in plan_results)
-        total_files = sum(r["file_count"] for r in plan_results)
+        success_count = sum(1 for r in plan_results if r.get("status") == "success")
+        llm_failed_count = sum(1 for r in plan_results if r.get("status") == "llm_failed")
+        total_actions = sum(r.get("action_count", 0) for r in plan_results)
+        total_files = sum(r.get("file_count", 0) for r in plan_results)
         
         all_plans = []
         for result in plan_results:
-            if result["status"] in ["success", "llm_failed"] and result["plan"]:
-                for action in result["plan"]:
-                    all_plans.append({
-                        **action,
-                        "source_path": result["target_path"],
-                    })
+            status = result.get("status")
+            plan = result.get("plan", [])
+            if status in ["success", "llm_failed"] and plan:
+                for action in plan:
+                    if isinstance(action, dict):
+                        all_plans.append({
+                            **action,
+                            "source_path": result.get("target_path"),
+                        })
         
         return {
             "status": "success",
@@ -2908,6 +3023,10 @@ async def api_multi_generate_plan(request: MultiTargetRequest):
             "total_actions": total_actions,
             "merged_plan": all_plans,
             "mode": "multi-directory-plan",
+            "raw_input_paths": raw_paths,
+            "processed_paths_count": len(processed_paths),
+            "ignored_paths_count": len(ignored_paths_info),
+            "ignored_paths": ignored_paths_info if len(ignored_paths_info) <= 10 else ignored_paths_info[:10] + [{"note": f"还有 {len(ignored_paths_info) - 10} 个被忽略的路径未显示"}],
         }
     
     except HTTPException:
