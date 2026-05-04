@@ -228,7 +228,8 @@ def undo_plan_impl(request: UndoPlanRequest) -> dict:
     }
 
 
-def execute_plan_async(request: ExecutePlanRequest, task_id: str) -> None:
+def execute_plan_async(task_id: str, target_path: str, plan: list) -> None:
+    from models.schemas import ActionPlanItem
     from utils.security import get_target_dir
     
     update_task_progress(task_id, status="running", message="开始执行炼金计划")
@@ -239,7 +240,7 @@ def execute_plan_async(request: ExecutePlanRequest, task_id: str) -> None:
     keep_count = 0
     
     try:
-        target_dir = get_target_dir(request.target_path)
+        target_dir = get_target_dir(target_path)
         results = []
         snapshot_path = get_snapshot_path(target_dir)
         
@@ -249,51 +250,56 @@ def execute_plan_async(request: ExecutePlanRequest, task_id: str) -> None:
         
         snapshot_operations = []
         
-        for i, item in enumerate(request.plan):
+        for i, item in enumerate(plan):
             if is_task_cancelled(task_id):
                 update_task_progress(task_id, status="cancelled", message=f"任务已取消，已处理 {i} 个文件")
                 return
             
-            if item.action not in ALLOWED_ACTIONS:
-                update_task_progress(task_id, status="failed", error=f"不支持的操作：{item.action}")
+            action = getattr(item, "action", None) or (item.get("action") if isinstance(item, dict) else None)
+            if action not in ALLOWED_ACTIONS:
+                update_task_progress(task_id, status="failed", error=f"不支持的操作：{action}")
                 return
             
-            if item.action in {"rename_and_move", "move"}:
-                if not item.target_path:
-                    update_task_progress(task_id, status="failed", error=f"{item.action} 操作缺少 target_path。")
+            if action in {"rename_and_move", "move"}:
+                target_path_item = getattr(item, "target_path", None) or (item.get("target_path") if isinstance(item, dict) else None)
+                if not target_path_item:
+                    update_task_progress(task_id, status="failed", error=f"{action} 操作缺少 target_path。")
                     return
         
-        total_items = len(request.plan)
-        for i, item in enumerate(request.plan):
+        total_items = len(plan)
+        for i, item in enumerate(plan):
             if is_task_cancelled(task_id):
                 update_task_progress(task_id, status="cancelled", message=f"任务已取消，已处理 {i} 个文件")
                 return
+            
+            file_name = getattr(item, "file", None) or (item.get("file") if isinstance(item, dict) else "")
+            action = getattr(item, "action", None) or (item.get("action") if isinstance(item, dict) else None)
             
             update_task_progress(
                 task_id,
                 current=i + 1,
-                message=f"正在处理 {i + 1}/{total_items}：{item.file}",
-                current_file=item.file,
+                message=f"正在处理 {i + 1}/{total_items}：{file_name}",
+                current_file=file_name,
             )
             
-            if item.action not in ALLOWED_ACTIONS:
+            if action not in ALLOWED_ACTIONS:
                 result_item = {
-                    "file": item.file,
-                    "action": item.action,
-                    "original_path": item.file,
+                    "file": file_name,
+                    "action": action,
+                    "original_path": file_name,
                     "new_path": None,
                     "status": "skipped",
-                    "message": f"不支持的操作：{item.action}",
+                    "message": f"不支持的操作：{action}",
                 }
                 results.append(result_item)
                 continue
             
-            source_path = resolve_inside_target(target_dir, item.file)
+            source_path = resolve_inside_target(target_dir, file_name)
             if not source_path.exists():
                 result_item = {
-                    "file": item.file,
-                    "action": item.action,
-                    "original_path": item.file,
+                    "file": file_name,
+                    "action": action,
+                    "original_path": file_name,
                     "new_path": None,
                     "status": "skipped",
                     "message": "源文件不存在，可能已被处理。",
@@ -302,24 +308,24 @@ def execute_plan_async(request: ExecutePlanRequest, task_id: str) -> None:
                 update_task_progress(task_id, completed_item=result_item)
                 continue
             
-            if item.action == "delete":
+            if action == "delete":
                 trash_path = resolve_inside_target(
                     target_dir,
-                    f".alchemy_trash/{uuid.uuid4().hex}/{Path(item.file).name}",
+                    f".alchemy_trash/{uuid.uuid4().hex}/{Path(file_name).name}",
                 )
                 trash_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(source_path), str(trash_path))
                 snapshot_operations.append(
                     {
-                        "action": item.action,
-                        "original_path": item.file,
+                        "action": action,
+                        "original_path": file_name,
                         "new_path": to_target_relative(target_dir, trash_path),
                     }
                 )
                 result_item = {
-                    "file": item.file,
-                    "action": item.action,
-                    "original_path": item.file,
+                    "file": file_name,
+                    "action": action,
+                    "original_path": file_name,
                     "new_path": to_target_relative(target_dir, trash_path),
                     "absolute_original_path": str(source_path),
                     "absolute_new_path": str(trash_path),
@@ -330,12 +336,12 @@ def execute_plan_async(request: ExecutePlanRequest, task_id: str) -> None:
                 update_task_progress(task_id, delete_done=delete_count, completed_item=result_item)
                 continue
             
-            if item.action == "keep":
+            if action == "keep":
                 result_item = {
-                    "file": item.file,
-                    "action": item.action,
-                    "original_path": item.file,
-                    "new_path": item.file,
+                    "file": file_name,
+                    "action": action,
+                    "original_path": file_name,
+                    "new_path": file_name,
                     "absolute_original_path": str(source_path),
                     "absolute_new_path": str(source_path),
                     "status": "success",
@@ -345,26 +351,28 @@ def execute_plan_async(request: ExecutePlanRequest, task_id: str) -> None:
                 update_task_progress(task_id, keep_done=keep_count, completed_item=result_item)
                 continue
             
-            if item.action == "move":
-                target_path = resolve_inside_target(target_dir, item.target_path)
-                target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path_item = getattr(item, "target_path", None) or (item.get("target_path") if isinstance(item, dict) else None)
+            
+            if action == "move":
+                target_path_resolved = resolve_inside_target(target_dir, target_path_item)
+                target_path_resolved.parent.mkdir(parents=True, exist_ok=True)
                 
-                shutil.move(str(source_path), str(target_path))
+                shutil.move(str(source_path), str(target_path_resolved))
                 snapshot_operations.append(
                     {
-                        "action": item.action,
-                        "original_path": item.file,
-                        "new_path": item.target_path,
+                        "action": action,
+                        "original_path": file_name,
+                        "new_path": target_path_item,
                     }
                 )
                 result_item = {
-                    "file": item.file,
-                    "action": item.action,
-                    "original_path": item.file,
-                    "target_path": item.target_path,
-                    "new_path": item.target_path,
+                    "file": file_name,
+                    "action": action,
+                    "original_path": file_name,
+                    "target_path": target_path_item,
+                    "new_path": target_path_item,
                     "absolute_original_path": str(source_path),
-                    "absolute_new_path": str(target_path),
+                    "absolute_new_path": str(target_path_resolved),
                     "status": "success",
                 }
                 results.append(result_item)
@@ -372,26 +380,26 @@ def execute_plan_async(request: ExecutePlanRequest, task_id: str) -> None:
                 update_task_progress(task_id, move_done=move_count, completed_item=result_item)
                 continue
             
-            if item.action == "rename_and_move":
-                target_path = resolve_inside_target(target_dir, item.target_path)
-                target_path.parent.mkdir(parents=True, exist_ok=True)
+            if action == "rename_and_move":
+                target_path_resolved = resolve_inside_target(target_dir, target_path_item)
+                target_path_resolved.parent.mkdir(parents=True, exist_ok=True)
                 
-                shutil.move(str(source_path), str(target_path))
+                shutil.move(str(source_path), str(target_path_resolved))
                 snapshot_operations.append(
                     {
-                        "action": item.action,
-                        "original_path": item.file,
-                        "new_path": item.target_path,
+                        "action": action,
+                        "original_path": file_name,
+                        "new_path": target_path_item,
                     }
                 )
                 result_item = {
-                    "file": item.file,
-                    "action": item.action,
-                    "original_path": item.file,
-                    "target_path": item.target_path,
-                    "new_path": item.target_path,
+                    "file": file_name,
+                    "action": action,
+                    "original_path": file_name,
+                    "target_path": target_path_item,
+                    "new_path": target_path_item,
                     "absolute_original_path": str(source_path),
-                    "absolute_new_path": str(target_path),
+                    "absolute_new_path": str(target_path_resolved),
                     "status": "success",
                 }
                 results.append(result_item)
@@ -405,7 +413,14 @@ def execute_plan_async(request: ExecutePlanRequest, task_id: str) -> None:
         write_snapshot(target_dir, snapshot_operations)
         
         history_id = uuid.uuid4().hex
-        plan_dict = [p.dict() for p in request.plan] if request.plan else []
+        plan_dict = []
+        for p in plan:
+            if isinstance(p, ActionPlanItem):
+                plan_dict.append(p.dict())
+            elif isinstance(p, dict):
+                plan_dict.append(p)
+            else:
+                plan_dict.append({})
         
         write_history(
             target_dir=target_dir,
