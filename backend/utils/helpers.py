@@ -1,4 +1,12 @@
 from datetime import datetime
+from pathlib import Path
+
+from .constants import (
+    CATEGORY_RULES,
+    WINDOWS_RESERVED_NAMES,
+    WINDOWS_INVALID_CHARS,
+    MAX_FILENAME_LENGTH,
+)
 
 
 def format_eta(seconds: float) -> str:
@@ -17,24 +25,73 @@ def format_eta(seconds: float) -> str:
 
 
 def classify_file(extension: str) -> str:
-    ext = extension.lower().lstrip('.')
+    ext = extension.lower()
+    for category, extensions in CATEGORY_RULES.items():
+        if ext in extensions:
+            return category
+    return "unknown"
+
+
+def validate_filename(filename: str) -> tuple[bool, str | None]:
+    if not filename or not filename.strip():
+        return False, "文件名为空"
     
-    if ext in {'jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg', 'ico', 'tiff'}:
-        return 'images'
-    elif ext in {'mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm', 'm4v'}:
-        return 'videos'
-    elif ext in {'mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a', 'wma'}:
-        return 'audio'
-    elif ext in {'doc', 'docx', 'pdf', 'txt', 'rtf', 'odt', 'xls', 'xlsx', 'ppt', 'pptx', 'md'}:
-        return 'documents'
-    elif ext in {'zip', 'rar', '7z', 'tar', 'gz', 'bz2'}:
-        return 'archives'
-    elif ext in {'exe', 'msi', 'apk', 'dmg', 'pkg'}:
-        return 'executables'
-    elif ext in {'js', 'py', 'java', 'cpp', 'c', 'h', 'go', 'rs', 'ts', 'html', 'css', 'json', 'xml', 'yaml', 'yml'}:
-        return 'code'
-    else:
-        return 'others'
+    for char in filename:
+        if char in WINDOWS_INVALID_CHARS:
+            return False, f"包含非法字符: {repr(char)}"
+    
+    name_without_ext = Path(filename).stem.upper()
+    if name_without_ext in WINDOWS_RESERVED_NAMES:
+        return False, f"包含 Windows 保留名称: {name_without_ext}"
+    
+    for reserved in WINDOWS_RESERVED_NAMES:
+        if name_without_ext.startswith(f"{reserved}."):
+            return False, f"包含 Windows 保留名称: {reserved}"
+    
+    if filename.endswith(".") or filename.endswith(" "):
+        return False, "文件名不能以点或空格结尾"
+    
+    if len(filename) > MAX_FILENAME_LENGTH:
+        return False, f"文件名过长 ({len(filename)} > {MAX_FILENAME_LENGTH})"
+    
+    if not name_without_ext.strip():
+        return False, "文件名主体部分为空（如 .hidden 格式仅隐藏文件可用）"
+    
+    return True, None
+
+
+def sanitize_filename(name: str, fallback_prefix: str = "file") -> str:
+    if not name or not name.strip():
+        return f"{fallback_prefix}_sanitized"
+    
+    sanitized = []
+    for char in name:
+        if char in WINDOWS_INVALID_CHARS:
+            sanitized.append("_")
+        else:
+            sanitized.append(char)
+    
+    sanitized = "".join(sanitized)
+    
+    while sanitized.endswith(".") or sanitized.endswith(" "):
+        sanitized = sanitized[:-1]
+    
+    if not sanitized or not Path(sanitized).stem.strip():
+        return f"{fallback_prefix}_sanitized"
+    
+    stem = Path(sanitized).stem.upper()
+    if stem in WINDOWS_RESERVED_NAMES:
+        sanitized = f"{sanitized}_renamed"
+    
+    if len(sanitized) > MAX_FILENAME_LENGTH:
+        extension = Path(sanitized).suffix
+        max_stem_length = MAX_FILENAME_LENGTH - len(extension) - 1
+        if max_stem_length < 1:
+            max_stem_length = 1
+        stem = Path(sanitized).stem[:max_stem_length]
+        sanitized = stem + extension
+    
+    return sanitized
 
 
 def get_safe_sort_key(history_item: dict) -> tuple:
