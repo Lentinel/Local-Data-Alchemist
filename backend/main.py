@@ -417,11 +417,7 @@ async def api_rename_preview(request: RenamePreviewRequest):
             rules=request.rules
         )
         
-        return {
-            "status": "success",
-            "preview": result,
-            "total_count": len(result),
-        }
+        return result
     
     except HTTPException:
         raise
@@ -536,31 +532,29 @@ async def get_task_status(task_id: str):
         
         return {
             "status": "success",
-            "task": {
-                "task_id": task.task_id,
-                "task_type": task.task_type,
-                "status": task.status,
-                "percentage": task.percentage,
-                "total": task.total,
-                "current": task.current,
-                "message": task.message,
-                "current_file": task.current_file,
-                "start_time": task.start_time,
-                "end_time": task.end_time,
-                "error": task.error,
-                "result": task.result,
-                "move_total": task.move_total,
-                "move_done": task.move_done,
-                "delete_total": task.delete_total,
-                "delete_done": task.delete_done,
-                "rename_total": task.rename_total,
-                "rename_done": task.rename_done,
-                "keep_total": task.keep_total,
-                "keep_done": task.keep_done,
-                "completed_items": task.completed_items if len(task.completed_items) <= 50 else task.completed_items[-50:],
-                "eta_seconds": task.eta_seconds,
-                "items_per_second": task.items_per_second,
-            },
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "current_status": task.status,
+            "percentage": task.percentage,
+            "total": task.total,
+            "current": task.current,
+            "message": task.message,
+            "current_file": task.current_file,
+            "start_time": task.start_time,
+            "end_time": task.end_time,
+            "error": task.error,
+            "result": task.result,
+            "move_total": task.move_total,
+            "move_done": task.move_done,
+            "delete_total": task.delete_total,
+            "delete_done": task.delete_done,
+            "rename_total": task.rename_total,
+            "rename_done": task.rename_done,
+            "keep_total": task.keep_total,
+            "keep_done": task.keep_done,
+            "completed_items": task.completed_items if len(task.completed_items) <= 50 else task.completed_items[-50:],
+            "eta_seconds": task.eta_seconds,
+            "items_per_second": task.items_per_second,
         }
     
     except HTTPException:
