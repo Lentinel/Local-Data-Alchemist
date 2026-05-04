@@ -7,6 +7,7 @@ from .file_service import (
     get_file_modification_time,
     calculate_dashboard_stats,
     preview_plan_impl,
+    preview_file_impl,
 )
 
 from .template_service import (
@@ -69,6 +70,7 @@ __all__ = [
     'get_file_modification_time',
     'calculate_dashboard_stats',
     'preview_plan_impl',
+    'preview_file_impl',
     'BUILTIN_TEMPLATES',
     'get_templates_dir',
     'load_all_templates',

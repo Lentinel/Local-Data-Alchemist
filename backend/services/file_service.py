@@ -517,3 +517,22 @@ def preview_plan_impl(
         "has_warnings": has_warnings,
         "needs_confirmation": needs_confirmation,
     }
+
+
+def preview_file_impl(target_dir: Path, relative_file_path: str) -> dict:
+    from fastapi import HTTPException
+    from utils.security import resolve_inside_target
+    
+    file_path = resolve_inside_target(target_dir, relative_file_path)
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"文件不存在：{relative_file_path}")
+    
+    if not file_path.is_file():
+        raise HTTPException(status_code=400, detail=f"不是文件：{relative_file_path}")
+    
+    preview = get_file_preview(file_path)
+    return {
+        "status": "success",
+        "preview": preview
+    }
