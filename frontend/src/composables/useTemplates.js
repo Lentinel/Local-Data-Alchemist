@@ -60,10 +60,10 @@ export function useTemplates(options = {}) {
     cancelEditTemplate()
   }
 
-  const applyTemplate = async (targetPath, templateId, files) => {
+  const applyTemplate = async (targetPath, templateId) => {
     if (!targetPath) {
       templateError.value = '请先锁定一个目录'
-      return
+      return null
     }
 
     isApplyingTemplate.value = true
@@ -75,7 +75,7 @@ export function useTemplates(options = {}) {
         onLog({ type: 'info', message: '正在应用模板...' })
       }
 
-      const response = await api.applyTemplate(targetPath, templateId, files)
+      const response = await api.applyTemplate(targetPath, templateId)
       templateResult.value = response.data
 
       if (onLog) {
@@ -152,7 +152,7 @@ export function useTemplates(options = {}) {
     if (!editingTemplate.value) return
     if (!editingTemplate.value.name.trim()) {
       templateError.value = '请输入模板名称'
-      return
+      return null
     }
 
     isLoadingTemplates.value = true

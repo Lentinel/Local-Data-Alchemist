@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import axios from 'axios'
+import api from './api'
 import {
   AlertCircle,
   AlertTriangle,
@@ -46,6 +47,9 @@ const error = ref(null)
 const consoleRef = ref(null)
 const consoleLogs = ref([])
 const copyToast = ref(null)
+
+const fileInventory = ref([])
+const mode = ref('')
 
 // 文件预览功能
 const isPreviewingFile = ref(false)
@@ -226,7 +230,7 @@ const pollTaskStatus = async () => {
   }
 
   try {
-    const response = await axios.get(`/api/task_status/${currentTaskId.value}`)
+    const response = await api.getTaskStatus(currentTaskId.value)
     const data = response.data
     
     taskStatus.value = data.status
@@ -293,9 +297,7 @@ const cancelCurrentTask = async () => {
   }
 
   try {
-    await axios.post('/api/cancel_task', {
-      task_id: currentTaskId.value
-    })
+    await api.cancelTask(currentTaskId.value)
     addLog('[系统] 正在取消任务...', 'info')
   } catch (err) {
     addLog(`[错误] 取消任务失败: ${extractErrorMessage(err)}`, 'error')
@@ -727,7 +729,7 @@ const openNativeFolderDialog = async () => {
   isSelectingFolder.value = true
 
   try {
-    const response = await axios.get('/api/select_folder')
+    const response = await api.selectFolder()
     if (response.data.status === 'cancelled' || !response.data.target_path) {
       addLog('[系统] 目录选择已取消', 'info')
       return
@@ -768,9 +770,7 @@ const lockManualTarget = async () => {
 
   try {
     addLog(`[系统] 正在校验本地路径: ${path}`, 'info')
-    const response = await axios.post('/api/lock_folder', {
-      target_path: path,
-    })
+    const response = await api.lockFolder(path)
     targetPath.value = response.data.target_path
     files.value = response.data.files
     analysis.value = response.data.analysis
@@ -799,9 +799,7 @@ const generateAlchemyPlan = async () => {
   addLog('[AI] 正在嗅探文件内容并生成炼金计划...', 'ai')
 
   try {
-    const response = await axios.post('/api/generate_plan', {
-      target_path: targetPath.value,
-    })
+    const response = await api.generatePlan(targetPath.value)
     files.value = response.data.file_inventory || files.value
     analysis.value = response.data.analysis || analysis.value
     actionPlan.value = response.data.plan
@@ -838,10 +836,7 @@ const loadPlanPreview = async () => {
   try {
     addLog('[安全] 正在执行计划预检查...', 'info')
 
-    const response = await axios.post('/api/preview_plan', {
-      target_path: targetPath.value,
-      plan: actionPlan.value,
-    })
+    const response = await api.previewPlan(targetPath.value, actionPlan.value)
 
     planPreviewData.value = response.data
     isShowingPlanPreview.value = true
@@ -904,10 +899,7 @@ const executePlanDirectly = async () => {
   addLog('[执行] 审批通过，开始执行文件炼金计划', 'action')
 
   try {
-    const response = await axios.post('/api/start_execute_task', {
-      target_path: targetPath.value,
-      plan: actionPlan.value,
-    })
+    const response = await api.startExecuteTask(targetPath.value, actionPlan.value)
     
     if (response.data.status === 'started') {
       currentTaskId.value = response.data.task_id
@@ -974,9 +966,7 @@ const undoPlan = async () => {
   addLog('[执行] 启动时光倒流协议，读取 snapshot.json', 'action')
 
   try {
-    const response = await axios.post('/api/undo_plan', {
-      target_path: targetPath.value,
-    })
+    const response = await api.undoPlan(targetPath.value)
     response.data.results?.forEach((result) => {
       addLog(`[执行] 回滚: ${result.restored_from} -> ${result.original_path || result.file}`, 'action')
     })
@@ -1120,10 +1110,7 @@ const previewFile = async (file) => {
 
   try {
     addLog(`[系统] 正在预览文件: ${file.name}`, 'info')
-    const response = await axios.post('/api/preview_file', {
-      target_path: targetPath.value,
-      file_path: file.path,
-    })
+    const response = await api.previewFile(targetPath.value, file.path)
 
     if (response.data.status === 'success') {
       previewContent.value = response.data.preview
@@ -1158,9 +1145,7 @@ const loadHistory = async () => {
 
   try {
     addLog('[系统] 正在加载操作历史记录...', 'info')
-    const response = await axios.post('/api/list_history', {
-      target_path: targetPath.value,
-    })
+    const response = await api.listHistory(targetPath.value)
 
     if (response.data.status === 'success') {
       historyList.value = response.data.history || []
@@ -1199,10 +1184,7 @@ const viewHistoryDetail = async (historyItem) => {
 
   try {
     addLog(`[系统] 正在查看历史记录详情: ${historyItem.id}`, 'info')
-    const response = await axios.post('/api/get_history', {
-      target_path: targetPath.value,
-      history_id: historyItem.id,
-    })
+    const response = await api.getHistory(targetPath.value, historyItem.id)
 
     if (response.data.status === 'success') {
       selectedHistory.value = response.data.history
@@ -1295,10 +1277,7 @@ const detectDuplicates = async () => {
 
   try {
     addLog('[系统] 正在检测重复文件...', 'info')
-    const response = await axios.post('/api/detect_duplicates', {
-      target_path: targetPath.value,
-      fast_mode: true
-    })
+    const response = await api.detectDuplicates(targetPath.value)
 
     if (response.data.status === 'success') {
       duplicateGroups.value = response.data.duplicate_groups || []
@@ -1376,11 +1355,7 @@ const processKeepSelected = async (groupHash) => {
   try {
     addLog(`[系统] 正在处理重复文件：保留 ${keepFile}，删除 ${duplicateFiles.length} 个副本...`, 'info')
     
-    const response = await axios.post('/api/keep_duplicate', {
-      target_path: targetPath.value,
-      keep_file: keepFile,
-      duplicate_files: duplicateFiles
-    })
+    const response = await api.keepDuplicate(targetPath.value, keepFile, duplicateFiles)
 
     if (response.data.status === 'success') {
       duplicateResult.value = response.data
@@ -1424,7 +1399,7 @@ const loadTemplates = async () => {
   templateError.value = null
 
   try {
-    const response = await axios.get('/api/list_templates')
+    const response = await api.listTemplates()
 
     if (response.data.status === 'success') {
       templates.value = response.data.templates || []
@@ -1471,10 +1446,7 @@ const applyTemplate = async (template) => {
   try {
     addLog(`[系统] 正在应用模板：${template.name}...`, 'info')
 
-    const response = await axios.post('/api/apply_template', {
-      target_path: targetPath.value,
-      template_id: template.id
-    })
+    const response = await api.applyTemplate(targetPath.value, template.id)
 
     if (response.data.status === 'success') {
       const data = response.data
@@ -1537,9 +1509,7 @@ const saveTemplate = async () => {
   }
 
   try {
-    const response = await axios.post('/api/save_template', {
-      template: editingTemplate.value
-    })
+    const response = await api.saveTemplate(editingTemplate.value)
 
     if (response.data.status === 'success') {
       addLog(`[系统] 模板 "${editingTemplate.value.name}" 保存成功`, 'info')
@@ -1569,9 +1539,7 @@ const deleteTemplate = async (template) => {
   }
 
   try {
-    const response = await axios.post('/api/delete_template', {
-      template_id: template.id
-    })
+    const response = await api.deleteTemplate(template.id)
 
     if (response.data.status === 'success') {
       addLog(`[系统] 模板 "${template.name}" 已删除`, 'info')
@@ -1749,11 +1717,7 @@ const generateRenamePreview = async () => {
   try {
     addLog('[系统] 正在生成重命名预览...', 'info')
 
-    const response = await axios.post('/api/rename_preview', {
-      target_path: targetPath.value,
-      selected_files: renameSelectedFiles.value,
-      rules: renameRules.value
-    })
+    const response = await api.renamePreview(targetPath.value, renameSelectedFiles.value, renameRules.value)
 
     if (response.data.status === 'success') {
       renamePreviews.value = response.data.previews || []
@@ -1806,10 +1770,7 @@ const executeRename = async () => {
   try {
     addLog('[系统] 正在执行批量重命名...', 'info')
 
-    const response = await axios.post('/api/rename_execute', {
-      target_path: targetPath.value,
-      rename_plan: renamePreviews.value
-    })
+    const response = await api.renameExecute(targetPath.value, renamePreviews.value)
 
     if (response.data.status === 'success') {
       renameResult.value = response.data
@@ -1820,15 +1781,6 @@ const executeRename = async () => {
       }
 
       hideRenamer()
-
-      if (files.value.length > 0) {
-        const responseList = await axios.post('/api/list_files', {
-          target_path: targetPath.value
-        })
-        if (responseList.data.status === 'success') {
-          files.value = responseList.data.files
-        }
-      }
     } else {
       renameError.value = '执行重命名失败：服务器返回错误状态'
       addLog(`[错误] 执行重命名失败: ${renameError.value}`, 'error')
@@ -1890,9 +1842,7 @@ const loadDashboardStats = async () => {
   try {
     addLog('[系统] 正在生成数据可视化报表...', 'info')
 
-    const response = await axios.post('/api/dashboard_stats', {
-      target_path: targetPath.value
-    })
+    const response = await api.dashboardStats(targetPath.value)
 
     if (response.data.status === 'success') {
       dashboardStats.value = response.data.stats
@@ -2060,7 +2010,7 @@ const addMultiTargetViaDialog = async () => {
   addLog('[系统] 请求系统原生目录选择器...', 'info')
   
   try {
-    const response = await axios.get('/api/select_folder')
+    const response = await api.selectFolder()
     if (response.data.status === 'cancelled' || !response.data.target_path) {
       addLog('[系统] 目录选择已取消', 'info')
       return
@@ -2093,9 +2043,7 @@ const performMultiScan = async () => {
   try {
     addLog('[系统] 正在执行多目录扫描...', 'info')
 
-    const response = await axios.post('/api/multi_scan', {
-      target_paths: multiTargets.value
-    })
+    const response = await api.multiScan(multiTargets.value)
 
     if (response.data.status === 'success') {
       multiScanResults.value = response.data
@@ -2133,9 +2081,7 @@ const performMultiGeneratePlan = async () => {
   try {
     addLog('[系统] 正在为多目录生成炼金计划...', 'info')
 
-    const response = await axios.post('/api/multi_generate_plan', {
-      target_paths: multiTargets.value
-    })
+    const response = await api.multiGeneratePlan(multiTargets.value)
 
     if (response.data.status === 'success') {
       multiPlanResults.value = response.data

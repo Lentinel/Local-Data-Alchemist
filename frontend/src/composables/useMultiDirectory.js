@@ -13,6 +13,8 @@ export function useMultiDirectory(options = {}) {
   const multiError = ref(null)
   const newMultiTargetPath = ref('')
   const isMultiMode = ref(false)
+  const mergedFiles = ref([])
+  const mergedAnalysis = ref(null)
 
   const hasTargets = computed(() => multiTargets.value.length > 0)
   const hasScanResults = computed(() => multiScanResults.value.length > 0)
@@ -34,6 +36,8 @@ export function useMultiDirectory(options = {}) {
       multiScanResults.value = []
       multiPlanResults.value = []
       multiError.value = null
+      mergedFiles.value = []
+      mergedAnalysis.value = null
     }
   }
 
@@ -106,21 +110,23 @@ export function useMultiDirectory(options = {}) {
     isMultiScanning.value = true
     multiError.value = null
     multiScanResults.value = []
+    mergedFiles.value = []
+    mergedAnalysis.value = null
 
     try {
       if (onLog) {
         onLog({ type: 'info', message: `开始扫描 ${multiTargets.value.length} 个目录...` })
       }
 
-      const response = await api.multiScan(multiTargets.value.map(t => ({
-        id: t.id,
-        path: t.path,
-      })))
+      const targetPaths = multiTargets.value.map(t => t.path)
+      const response = await api.multiScan(targetPaths)
 
       multiScanResults.value = response.data.results || []
+      mergedFiles.value = response.data.merged_files || []
+      mergedAnalysis.value = response.data.merged_analysis || null
 
       multiTargets.value.forEach(target => {
-        const result = multiScanResults.value.find(r => r.target_id === target.id)
+        const result = multiScanResults.value.find(r => r.target_id === target.id || r.target_path === target.path)
         if (result) {
           target.status = result.status
         }
@@ -134,12 +140,15 @@ export function useMultiDirectory(options = {}) {
           message: `多目录扫描完成: 成功 ${successCount} 个，失败 ${failCount} 个` 
         })
       }
+
+      return response.data
     } catch (err) {
       multiError.value = extractErrorMessage ? extractErrorMessage(err) : '多目录扫描失败'
       if (onLog) {
         onLog({ type: 'error', message: `多目录扫描失败: ${multiError.value}` })
       }
       console.error('Multi scan error:', err)
+      return null
     } finally {
       isMultiScanning.value = false
     }
@@ -157,7 +166,8 @@ export function useMultiDirectory(options = {}) {
         onLog({ type: 'info', message: '开始生成多目录整理计划...' })
       }
 
-      const response = await api.multiGeneratePlan(multiScanResults.value)
+      const targetPaths = multiTargets.value.map(t => t.path)
+      const response = await api.multiGeneratePlan(targetPaths)
 
       multiPlanResults.value = response.data.results || []
 
@@ -206,6 +216,8 @@ export function useMultiDirectory(options = {}) {
     multiError,
     newMultiTargetPath,
     isMultiMode,
+    mergedFiles,
+    mergedAnalysis,
     hasTargets,
     hasScanResults,
     hasPlanResults,

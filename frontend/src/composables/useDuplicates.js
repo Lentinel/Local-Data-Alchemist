@@ -14,7 +14,7 @@ export function useDuplicates(options = {}) {
 
   const hasDuplicates = computed(() => duplicateGroups.value.length > 0)
 
-  const detectDuplicates = async (targetPath) => {
+  const detectDuplicates = async (targetPath, fastMode = true) => {
     if (!targetPath) {
       duplicateError.value = '请先锁定一个目录'
       return
@@ -32,7 +32,7 @@ export function useDuplicates(options = {}) {
         onLog({ type: 'info', message: '开始检测重复文件...' })
       }
 
-      const response = await api.detectDuplicates(targetPath)
+      const response = await api.detectDuplicates(targetPath, fastMode)
       duplicateGroups.value = response.data.groups || []
 
       if (duplicateGroups.value.length > 0) {
@@ -64,9 +64,30 @@ export function useDuplicates(options = {}) {
     selectedKeepFiles.value[hash] = filePath
   }
 
-  const keepSelectedFile = async (targetPath, hash, index) => {
+  const keepSelectedFile = async (targetPath, hash, keepFileIndex) => {
     if (!targetPath) {
       duplicateError.value = '请先锁定一个目录'
+      return
+    }
+
+    const group = duplicateGroups.value.find(g => g.hash === hash)
+    if (!group || !group.files) {
+      duplicateError.value = '无效的重复文件组'
+      return
+    }
+
+    const keepFile = selectedKeepFiles.value[hash] || group.files[0]?.path
+    if (!keepFile) {
+      duplicateError.value = '请选择要保留的文件'
+      return
+    }
+
+    const duplicateFiles = group.files
+      .map(f => f.path)
+      .filter(p => p !== keepFile)
+
+    if (duplicateFiles.length === 0) {
+      duplicateError.value = '没有需要删除的重复文件'
       return
     }
 
@@ -74,13 +95,16 @@ export function useDuplicates(options = {}) {
     duplicateError.value = null
 
     try {
-      const response = await api.keepDuplicate(targetPath, hash, index)
+      if (onLog) {
+        onLog({ type: 'info', message: '正在处理重复文件...' })
+      }
+
+      const response = await api.keepDuplicate(targetPath, keepFile, duplicateFiles)
       duplicateResult.value = response.data
 
-      const group = duplicateGroups.value.find(g => g.hash === hash)
       if (group) {
         group.processed = true
-        group.kept_index = index
+        group.kept_file = keepFile
       }
 
       if (onLog) {
