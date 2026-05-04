@@ -12,7 +12,7 @@ const RENAME_RULE_TYPES = [
 ]
 
 export function useRenamer(options = {}) {
-  const { onLog, extractErrorMessage } = options
+  const { onLog, extractErrorMessage, targetPath } = options
 
   const isShowingRenamer = ref(false)
   const isLoadingRenamePreview = ref(false)
@@ -76,8 +76,8 @@ export function useRenamer(options = {}) {
   const removeRule = (index) => {
     if (renameRules.value.length > 1) {
       renameRules.value.splice(index, 1)
-      renamePreviews.value = []
     }
+    renamePreviews.value = []
   }
 
   const updateRuleType = (index, type) => {
@@ -92,6 +92,12 @@ export function useRenamer(options = {}) {
       return
     }
 
+    const currentTargetPath = typeof targetPath === 'function' ? targetPath() : targetPath
+    if (!currentTargetPath) {
+      renameError.value = '请先锁定一个目录'
+      return
+    }
+
     isLoadingRenamePreview.value = true
     renameError.value = null
     renamePreviews.value = []
@@ -99,8 +105,10 @@ export function useRenamer(options = {}) {
     renameHasConflicts.value = false
 
     try {
+      const selectedFilePaths = renameSelectedFiles.value.map(f => f.path)
       const response = await api.renamePreview(
-        renameSelectedFiles.value.map(f => ({ path: f.path, name: f.name, extension: f.extension })),
+        currentTargetPath,
+        selectedFilePaths,
         renameRules.value
       )
 
@@ -134,6 +142,12 @@ export function useRenamer(options = {}) {
       return
     }
 
+    const currentTargetPath = typeof targetPath === 'function' ? targetPath() : targetPath
+    if (!currentTargetPath) {
+      renameError.value = '请先锁定一个目录'
+      return
+    }
+
     if (renameHasConflicts.value) {
       if (!confirm('检测到命名冲突，继续执行可能导致文件覆盖。是否继续？')) {
         return
@@ -150,8 +164,8 @@ export function useRenamer(options = {}) {
       }
 
       const response = await api.renameExecute(
-        renameSelectedFiles.value.map(f => ({ path: f.path, name: f.name, extension: f.extension })),
-        renameRules.value
+        currentTargetPath,
+        renamePreviews.value
       )
 
       renameResult.value = response.data

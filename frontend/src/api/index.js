@@ -13,14 +13,17 @@ export const api = {
   lockFolder: (targetPath) => 
     axios.post('/api/lock_folder', { target_path: targetPath }),
 
-  generatePlan: (targetPath, files, analysis) => 
-    axios.post('/api/generate_plan', { target_path: targetPath, files, analysis }),
+  generatePlan: (targetPath) => 
+    axios.post('/api/generate_plan', { target_path: targetPath }),
 
   previewPlan: (targetPath, plan) => 
     axios.post('/api/preview_plan', { target_path: targetPath, plan }),
 
   startExecuteTask: (targetPath, plan) => 
     axios.post('/api/start_execute_task', { target_path: targetPath, plan }),
+
+  executePlan: (targetPath, plan) => 
+    axios.post('/api/execute_plan', { target_path: targetPath, plan }),
 
   undoPlan: (targetPath) => 
     axios.post('/api/undo_plan', { target_path: targetPath }),
@@ -34,41 +37,52 @@ export const api = {
   getHistory: (targetPath, historyId) => 
     axios.post('/api/get_history', { target_path: targetPath, history_id: historyId }),
 
-  detectDuplicates: (targetPath) => 
-    axios.post('/api/detect_duplicates', { target_path: targetPath }),
+  detectDuplicates: (targetPath, fastMode = true) => 
+    axios.post('/api/detect_duplicates', { target_path: targetPath, fast_mode: fastMode }),
 
-  keepDuplicate: (targetPath, hash, index) => 
-    axios.post('/api/keep_duplicate', { target_path: targetPath, hash, index }),
+  keepDuplicate: (targetPath, keepFile, duplicateFiles) => 
+    axios.post('/api/keep_duplicate', { 
+      target_path: targetPath, 
+      keep_file: keepFile, 
+      duplicate_files: duplicateFiles 
+    }),
 
   listTemplates: () => 
     axios.get('/api/list_templates'),
 
-  applyTemplate: (targetPath, templateId, files) => 
-    axios.post('/api/apply_template', { target_path: targetPath, template_id: templateId, files }),
+  getTemplate: (templateId) => 
+    axios.post('/api/get_template', { template_id: templateId }),
+
+  applyTemplate: (targetPath, templateId) => 
+    axios.post('/api/apply_template', { target_path: targetPath, template_id: templateId }),
 
   saveTemplate: (template) => 
-    axios.post('/api/save_template', template),
+    axios.post('/api/save_template', { template }),
 
   deleteTemplate: (templateId) => 
     axios.post('/api/delete_template', { template_id: templateId }),
 
-  renamePreview: (selectedFiles, rules) => 
-    axios.post('/api/rename_preview', { selected_files: selectedFiles, rules }),
+  renamePreview: (targetPath, selectedFiles, rules) => 
+    axios.post('/api/rename_preview', { 
+      target_path: targetPath,
+      selected_files: selectedFiles, 
+      rules 
+    }),
 
-  renameExecute: (selectedFiles, rules) => 
-    axios.post('/api/rename_execute', { selected_files: selectedFiles, rules }),
-
-  listFiles: (targetPath) => 
-    axios.post('/api/list_files', { target_path: targetPath }),
+  renameExecute: (targetPath, renamePlan) => 
+    axios.post('/api/rename_execute', { 
+      target_path: targetPath,
+      rename_plan: renamePlan 
+    }),
 
   dashboardStats: (targetPath) => 
     axios.post('/api/dashboard_stats', { target_path: targetPath }),
 
-  multiScan: (targets) => 
-    axios.post('/api/multi_scan', { targets }),
+  multiScan: (targetPaths) => 
+    axios.post('/api/multi_scan', { target_paths: targetPaths }),
 
-  multiGeneratePlan: (scanResults) => 
-    axios.post('/api/multi_generate_plan', { scan_results: scanResults }),
+  multiGeneratePlan: (targetPaths) => 
+    axios.post('/api/multi_generate_plan', { target_paths: targetPaths }),
 }
 
 export default api
