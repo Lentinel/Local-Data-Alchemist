@@ -31,10 +31,24 @@ export function useRenamer(options = {}) {
   const canPreview = computed(() => hasSelectedFiles.value && hasRules.value)
   const canExecute = computed(() => renamePreviews.value.length > 0 && !renameHasConflicts.value && !isExecutingRename.value)
 
+  const makeEmptyRule = (ruleType) => ({
+    rule_type: ruleType,
+    prefix: '',
+    suffix: '',
+    find_text: '',
+    replace_text: '',
+    regex_pattern: '',
+    regex_replacement: '',
+    start_number: 1,
+    number_padding: 3,
+    number_separator: '_',
+    number_position: 'prefix',
+  })
+
   const showRenamer = (availableFiles = []) => {
     isShowingRenamer.value = true
     renameSelectedFiles.value = []
-    renameRules.value = [{ type: activeRenameRuleType.value, params: {} }]
+    renameRules.value = [makeEmptyRule(activeRenameRuleType.value)]
     renamePreviews.value = []
     renameConflicts.value = []
     renameHasConflicts.value = false
@@ -69,7 +83,7 @@ export function useRenamer(options = {}) {
   }
 
   const addRule = () => {
-    renameRules.value.push({ type: activeRenameRuleType.value, params: {} })
+    renameRules.value.push(makeEmptyRule(activeRenameRuleType.value))
     renamePreviews.value = []
   }
 
@@ -81,8 +95,7 @@ export function useRenamer(options = {}) {
   }
 
   const updateRuleType = (index, type) => {
-    renameRules.value[index].type = type
-    renameRules.value[index].params = {}
+    renameRules.value[index] = makeEmptyRule(type)
     renamePreviews.value = []
   }
 

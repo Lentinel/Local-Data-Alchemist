@@ -89,6 +89,8 @@ from services import (
     multi_generate_plan,
 )
 
+from contracts import rename_preview_response, rename_execute_response
+
 
 ENV_PATH = Path(__file__).resolve().with_name(".env")
 load_dotenv(dotenv_path=ENV_PATH, override=True)
@@ -410,15 +412,15 @@ async def api_apply_template(request: ApplyTemplateRequest):
 async def api_rename_preview(request: RenamePreviewRequest):
     try:
         target_dir = get_target_dir(request.target_path)
-        
+
         result = generate_rename_preview(
             target_dir=target_dir,
             selected_files=request.selected_files,
             rules=request.rules
         )
-        
-        return result
-    
+
+        return rename_preview_response(result)
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -430,23 +432,14 @@ async def api_rename_preview(request: RenamePreviewRequest):
 async def api_rename_execute(request: RenameExecuteRequest):
     try:
         target_dir = get_target_dir(request.target_path)
-        
-        results = execute_rename_plan(
+
+        result = execute_rename_plan(
             target_dir=target_dir,
             rename_plan=request.rename_plan
         )
-        
-        success_count = len([r for r in results if r.get("status") == "success"])
-        failed_count = len([r for r in results if r.get("status") == "failed"])
-        
-        return {
-            "status": "success",
-            "results": results,
-            "success_count": success_count,
-            "failed_count": failed_count,
-            "message": f"重命名完成：成功 {success_count} 个，失败 {failed_count} 个",
-        }
-    
+
+        return rename_execute_response(result)
+
     except HTTPException:
         raise
     except Exception as exc:
@@ -531,10 +524,9 @@ async def get_task_status(task_id: str):
             raise HTTPException(status_code=404, detail=f"任务不存在：{task_id}")
         
         return {
-            "status": "success",
             "task_id": task.task_id,
             "task_type": task.task_type,
-            "current_status": task.status,
+            "status": task.status,
             "percentage": task.percentage,
             "total": task.total,
             "current": task.current,
@@ -555,6 +547,7 @@ async def get_task_status(task_id: str):
             "completed_items": task.completed_items if len(task.completed_items) <= 50 else task.completed_items[-50:],
             "eta_seconds": task.eta_seconds,
             "items_per_second": task.items_per_second,
+            "formatted_eta": task.formatted_eta,
         }
     
     except HTTPException:
@@ -607,13 +600,14 @@ async def api_start_execute_task(request: ExecutePlanRequest):
         task = get_task(task_id)
         
         return {
-            "status": "success",
+            "status": "started",
             "message": "任务已启动",
             "task_id": task_id,
+            "total_items": len(request.plan),
             "task": {
                 "task_id": task.task_id if task else task_id,
-                "task_type": "execute_plan" if task else task.task_type,
-                "status": "running" if task else task.status,
+                "task_type": task.task_type if task else "execute_plan",
+                "status": task.status if task else "running",
                 "percentage": 0.0,
                 "total": len(request.plan),
                 "current": 0,
@@ -632,4 +626,5 @@ async def api_start_execute_task(request: ExecutePlanRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    port = int(os.environ.get("PORT", 8002))
+    uvicorn.run(app, host="127.0.0.1", port=port)
