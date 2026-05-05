@@ -127,6 +127,7 @@ def detect_duplicates(target_dir: Path, fast_mode: bool = True) -> dict:
     return {
         "status": "success",
         "total_files_scanned": len(files_info),
+        "groups": duplicate_groups,
         "duplicate_groups": duplicate_groups,
         "total_duplicate_count": total_duplicate_count,
         "total_duplicate_size": total_duplicate_size,

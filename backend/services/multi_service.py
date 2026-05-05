@@ -356,6 +356,7 @@ def multi_generate_plan(raw_paths: list[str]) -> dict:
     
     return {
         "status": "success",
+        "results": plan_results,
         "plan_results": plan_results,
         "success_count": success_count,
         "llm_failed_count": llm_failed_count,

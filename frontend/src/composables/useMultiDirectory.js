@@ -92,8 +92,8 @@ export function useMultiDirectory(options = {}) {
   const selectFolderForMulti = async () => {
     try {
       const response = await api.selectFolder()
-      if (response.data && response.data.path) {
-        await addMultiTarget(response.data.path)
+      if (response.data && response.data.target_path) {
+        await addMultiTarget(response.data.target_path)
       }
     } catch (err) {
       multiError.value = extractErrorMessage ? extractErrorMessage(err) : '选择文件夹失败'

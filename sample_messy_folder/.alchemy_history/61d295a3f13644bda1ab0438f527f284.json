@@ -1,0 +1,27 @@
+{
+  "id": "61d295a3f13644bda1ab0438f527f284",
+  "type": "execute",
+  "target_path": "C:\\Users\\Lentinel\\Documents\\GitHub\\Local-Data-Alchemist\\sample_messy_folder",
+  "created_at": "2026-05-05T22:51:14.305010",
+  "plan": [
+    {
+      "file": "cache_tmp_001.tmp",
+      "action": "keep",
+      "target_path": null,
+      "reason": "contract test",
+      "extracted_info": null
+    }
+  ],
+  "results": [
+    {
+      "file": "cache_tmp_001.tmp",
+      "action": "keep",
+      "original_path": "cache_tmp_001.tmp",
+      "new_path": "cache_tmp_001.tmp",
+      "absolute_original_path": "C:\\Users\\Lentinel\\Documents\\GitHub\\Local-Data-Alchemist\\sample_messy_folder\\cache_tmp_001.tmp",
+      "absolute_new_path": "C:\\Users\\Lentinel\\Documents\\GitHub\\Local-Data-Alchemist\\sample_messy_folder\\cache_tmp_001.tmp",
+      "status": "success"
+    }
+  ],
+  "snapshot_path": "C:\\Users\\Lentinel\\Documents\\GitHub\\Local-Data-Alchemist\\sample_messy_folder\\snapshot.json"
+}

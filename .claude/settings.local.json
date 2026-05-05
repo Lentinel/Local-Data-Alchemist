@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile main.py)",
+      "Bash(python tools/smoke_api_contract.py)",
+      "Bash(python tools/verify_api_contract.py)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}

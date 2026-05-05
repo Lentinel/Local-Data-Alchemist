@@ -365,6 +365,7 @@ class TaskProgress(BaseModel):
     completed_items: list[dict] = Field(default_factory=list, description="已完成的操作列表")
     eta_seconds: Optional[float] = Field(default=None, description="估计剩余秒数")
     items_per_second: Optional[float] = Field(default=None, description="每秒处理速度")
+    formatted_eta: Optional[str] = Field(default=None, description="格式化的预计剩余时间")
 
     @property
     def percentage(self) -> float:
