@@ -85,6 +85,7 @@ from services import (
     undo_plan_impl,
     execute_plan_async,
     llm_debug_info,
+    llm_health_info,
     multi_scan,
     multi_generate_plan,
 )
@@ -120,6 +121,12 @@ async def root():
 @app.get("/api/llm_debug")
 async def llm_debug():
     return llm_debug_info()
+
+
+@app.get("/llm_health")
+@app.get("/api/llm_health")
+async def llm_health(check_connection: bool = False):
+    return llm_health_info(check_connection=check_connection)
 
 
 @app.get("/select_folder")

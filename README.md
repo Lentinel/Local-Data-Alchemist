@@ -41,6 +41,8 @@
 
 ## 后端配置（backend/.env）
 
+先复制 `backend/.env.example` 为 `backend/.env`，再填写你自己的配置（示例文件里只有占位值，不包含真实 Key）。如果 `/api/llm_health` 提示 `backend/.env` 不存在，也可以直接执行这一步。
+
 在 `backend/.env` 填写（示例，不要提交 Key）：
 
 ```ini
@@ -53,6 +55,7 @@ OPENAI_TIMEOUT_SECONDS=180
 ### 敏感信息说明（务必阅读）
 
 - `backend/.env` 包含 LLM API Key 等敏感信息，已被禁止提交到 GitHub。
+- 本仓库已提供 `backend/.env.example` 作为示例模板；可复制为 `backend/.env` 后再填写。
 - 本仓库已在 `.gitignore` 中忽略 `.env / backend/.env / frontend/.env` 及常见的 `.env.*` 变体。
 - 你需要在本地自行创建 `backend/.env` 文件并填入自己的 Key。
 

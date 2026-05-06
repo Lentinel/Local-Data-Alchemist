@@ -3,10 +3,10 @@ import json
 import re
 import hashlib
 import httpx
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 from openai import APIConnectionError, AuthenticationError, OpenAI
 from pydantic import ValidationError
 from fastapi import HTTPException
@@ -45,9 +45,9 @@ def should_translate_to_zh(text: str | None) -> bool:
     return (ascii_letters / max(len(stripped), 1)) >= 0.12
 
 
-def build_openai_client(timeout_seconds: int) -> OpenAI:
-    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
-    api_base = (os.getenv("OPENAI_API_BASE") or "").strip()
+def build_openai_client(timeout_seconds: int, api_key: str | None = None, api_base: str | None = None) -> OpenAI:
+    api_key = (api_key if api_key is not None else (os.getenv("OPENAI_API_KEY") or "")).strip()
+    api_base = (api_base if api_base is not None else (os.getenv("OPENAI_API_BASE") or "")).strip()
     return OpenAI(
         api_key=api_key,
         base_url=api_base,
@@ -329,18 +329,116 @@ def call_llm_generate_plan(file_snippets: list[dict]) -> list[ActionPlanItem]:
     return parse_llm_plan(content)
 
 
+def _is_placeholder_value(field_name: str, value: str) -> bool:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return False
+    if field_name == "OPENAI_API_KEY":
+        return normalized == "your_openai_api_key_here"
+    if field_name == "OPENAI_API_BASE":
+        return "your-openai-compatible-base-url" in normalized
+    if field_name == "OPENAI_MODEL":
+        return normalized == "your_model_name_here"
+    return False
+
+
+
+def _build_placeholder_summary(api_key: str, api_base: str, model: str) -> tuple[bool, list[str]]:
+    placeholder_fields: list[str] = []
+    for field_name, value in {
+        "OPENAI_API_KEY": api_key,
+        "OPENAI_API_BASE": api_base,
+        "OPENAI_MODEL": model,
+    }.items():
+        if _is_placeholder_value(field_name, value):
+            placeholder_fields.append(field_name)
+    return bool(placeholder_fields), placeholder_fields
+
+
+
+def _build_connection_result(connection_status: str | None = None, connection_error: str | None = None, checked_at: str | None = None) -> dict:
+    return {
+        "connection_status": connection_status,
+        "connection_error": connection_error,
+        "checked_at": checked_at,
+    }
+
+
+
+def _sanitize_connection_error(exc: Exception) -> str:
+    if isinstance(exc, AuthenticationError):
+        return "authentication_failed"
+    if exc.__class__.__name__ == "APITimeoutError" or isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+        return "request_timed_out"
+    if isinstance(exc, (APIConnectionError, httpx.NetworkError, httpx.ConnectError)):
+        return "connection_failed"
+    return "request_failed"
+
+
+
+def _check_llm_connection(api_key: str, api_base: str, model: str, timeout_seconds: int) -> dict:
+    checked_at = datetime.now(timezone.utc).isoformat()
+    if not api_key or not api_base or not model:
+        return _build_connection_result(
+            connection_status="skipped",
+            connection_error="missing_required_config",
+            checked_at=checked_at,
+        )
+
+    client = build_openai_client(timeout_seconds, api_key=api_key, api_base=api_base)
+
+    try:
+        client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": "ping"}],
+            max_tokens=1,
+            temperature=0,
+        )
+        return _build_connection_result(
+            connection_status="ok",
+            connection_error=None,
+            checked_at=checked_at,
+        )
+    except Exception as exc:
+        return _build_connection_result(
+            connection_status="error",
+            connection_error=_sanitize_connection_error(exc),
+            checked_at=checked_at,
+        )
+
+
+
+def _parse_timeout_seconds(timeout_seconds_raw: str) -> tuple[int, bool]:
+    timeout_seconds = 180
+    timeout_valid = True
+    if timeout_seconds_raw:
+        try:
+            timeout_seconds = int(float(timeout_seconds_raw))
+        except ValueError:
+            timeout_seconds = 180
+            timeout_valid = False
+    return timeout_seconds, timeout_valid
+
+
+
+def _mask_api_key(api_key: str) -> str | None:
+    if not api_key:
+        return None
+    if len(api_key) <= 4:
+        return f"{api_key[:1]}***"
+    if len(api_key) <= 8:
+        return f"{api_key[:2]}***"
+    return f"{api_key[:4]}...{api_key[-4:]}"
+
+
+
 def llm_debug_info() -> dict:
     api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
     api_base = (os.getenv("OPENAI_API_BASE") or "").strip()
     model = (os.getenv("OPENAI_MODEL") or "").strip()
     timeout_seconds_raw = (os.getenv("OPENAI_TIMEOUT_SECONDS") or "").strip()
     fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:10] if api_key else None
-    timeout_seconds = 180
-    if timeout_seconds_raw:
-        try:
-            timeout_seconds = int(float(timeout_seconds_raw))
-        except ValueError:
-            timeout_seconds = 180
+    timeout_seconds, _ = _parse_timeout_seconds(timeout_seconds_raw)
     return {
         "status": "success",
         "env_path": str(ENV_PATH),
@@ -351,6 +449,65 @@ def llm_debug_info() -> dict:
         "api_key_len": len(api_key),
         "api_key_fingerprint": fingerprint,
     }
+
+
+
+def llm_health_info(check_connection: bool = False) -> dict:
+    env_file_exists = ENV_PATH.exists()
+    env_values = dotenv_values(ENV_PATH) if env_file_exists else {}
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip() or (env_values.get("OPENAI_API_KEY") or "").strip()
+    api_base = (os.getenv("OPENAI_API_BASE") or "").strip() or (env_values.get("OPENAI_API_BASE") or "").strip()
+    model = (os.getenv("OPENAI_MODEL") or "").strip() or (env_values.get("OPENAI_MODEL") or "").strip()
+    timeout_seconds_raw = (os.getenv("OPENAI_TIMEOUT_SECONDS") or "").strip() or (env_values.get("OPENAI_TIMEOUT_SECONDS") or "").strip()
+    timeout_seconds, timeout_valid = _parse_timeout_seconds(timeout_seconds_raw)
+    has_placeholder_values, placeholder_fields = _build_placeholder_summary(api_key, api_base, model)
+
+    has_api_key = bool(api_key) and "OPENAI_API_KEY" not in placeholder_fields
+    has_api_base = bool(api_base) and "OPENAI_API_BASE" not in placeholder_fields
+    has_model = bool(model) and "OPENAI_MODEL" not in placeholder_fields
+
+    suggestions: list[str] = []
+    if not env_file_exists:
+        suggestions.append("backend/.env 不存在")
+    if not api_key:
+        suggestions.append("OPENAI_API_KEY 未配置")
+    if not api_base:
+        suggestions.append("OPENAI_API_BASE 未配置")
+    if not model:
+        suggestions.append("OPENAI_MODEL 未配置")
+    if timeout_seconds_raw and not timeout_valid:
+        suggestions.append("OPENAI_TIMEOUT_SECONDS 非法，已回退为 180")
+    for field_name in placeholder_fields:
+        suggestions.append(f"{field_name} 仍是示例占位值，请替换为真实值")
+
+    config_complete = has_api_key and has_api_base and has_model
+    connection_result = _build_connection_result()
+    if check_connection:
+        if has_placeholder_values:
+            connection_result = _build_connection_result(
+                connection_status="skipped",
+                connection_error="placeholder_config_detected",
+                checked_at=datetime.now(timezone.utc).isoformat(),
+            )
+        else:
+            connection_result = _check_llm_connection(api_key, api_base, model, timeout_seconds)
+
+    return {
+        "env_file_exists": env_file_exists,
+        "has_api_key": has_api_key,
+        "api_key_preview": _mask_api_key(api_key),
+        "has_api_base": has_api_base,
+        "api_base": api_base or None,
+        "has_model": has_model,
+        "model": model or None,
+        "timeout_seconds": timeout_seconds,
+        "status": "ok" if config_complete and timeout_valid else "warning",
+        "suggestions": suggestions,
+        "has_placeholder_values": has_placeholder_values,
+        "placeholder_fields": placeholder_fields,
+        **connection_result,
+    }
+
 
 
 def build_llm_prompt(files: list[FileInfo]) -> str:

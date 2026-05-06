@@ -50,6 +50,10 @@ const copyToast = ref(null)
 
 const fileInventory = ref([])
 const mode = ref('')
+const isCheckingLlmHealth = ref(false)
+const isTestingLlmConnection = ref(false)
+const llmHealth = ref(null)
+const llmHealthError = ref(null)
 
 // 文件预览功能
 const isPreviewingFile = ref(false)
@@ -579,6 +583,136 @@ const categoryTree = computed(() => files.value.reduce((tree, file) => {
   return tree
 }, {}))
 
+const llmConnectionErrorText = {
+  placeholder_config_detected: '连接测试已跳过，因为配置仍是示例占位值',
+  authentication_failed: '认证失败，请检查 API Key 是否正确',
+  request_timed_out: '请求超时，请检查网络或适当增大超时时间',
+  connection_failed: '连接失败，请检查 API Base 地址与网络连通性',
+  request_failed: '请求失败，请稍后重试或检查服务端日志',
+  missing_required_config: '连接测试已跳过，请先补全必需配置',
+}
+
+const llmHasPlaceholderValues = computed(() => Boolean(llmHealth.value?.has_placeholder_values))
+
+const llmPlaceholderFields = computed(() => {
+  if (!Array.isArray(llmHealth.value?.placeholder_fields)) {
+    return []
+  }
+  return llmHealth.value.placeholder_fields
+})
+
+const formatLlmConnectionError = (connectionError) => {
+  if (!connectionError) {
+    return '—'
+  }
+  return llmConnectionErrorText[connectionError] || connectionError
+}
+
+const formatLlmConnectionStatus = (connectionStatus) => {
+  if (!connectionStatus) {
+    return '未测试'
+  }
+  if (connectionStatus === 'ok') {
+    return '正常'
+  }
+  if (connectionStatus === 'error') {
+    return '失败'
+  }
+  if (connectionStatus === 'skipped') {
+    return '已跳过'
+  }
+  return connectionStatus
+}
+
+const formatLlmConfigStatus = (fieldName, configured) => {
+  if (llmPlaceholderFields.value.includes(fieldName)) {
+    return '示例占位值'
+  }
+  return configured ? '已配置' : '未配置'
+}
+
+const llmHealthToneClass = computed(() => {
+  if (llmHealthError.value) {
+    return 'border-red-500/20 bg-red-500/10 text-red-300'
+  }
+  if (!llmHealth.value) {
+    return 'border-slate-500/20 bg-slate-500/10 text-slate-300'
+  }
+  if (llmHealth.value.connection_status === 'error') {
+    return 'border-red-500/20 bg-red-500/10 text-red-300'
+  }
+  if (llmHealth.value.connection_status === 'skipped' || llmHealth.value.status === 'warning') {
+    return 'border-amber-500/20 bg-amber-500/10 text-amber-200'
+  }
+  if (llmHealth.value.status === 'ok') {
+    return 'border-emerald-500/20 bg-emerald-500/10 text-emerald-200'
+  }
+  return 'border-slate-500/20 bg-slate-500/10 text-slate-300'
+})
+
+const llmHealthStatusLabel = computed(() => {
+  if (llmHealthError.value) {
+    return '检查失败'
+  }
+  if (!llmHealth.value) {
+    return '未检查'
+  }
+  if (llmHealth.value.connection_status === 'ok') {
+    return '连接正常'
+  }
+  if (llmHealth.value.connection_status === 'error') {
+    return '连接失败'
+  }
+  if (llmHealth.value.connection_status === 'skipped') {
+    return '连接已跳过'
+  }
+  return llmHealth.value.status === 'ok' ? '配置正常' : '需要关注'
+})
+
+const llmHealthSummaryText = computed(() => {
+  if (llmHealthError.value) {
+    return llmHealthError.value
+  }
+  if (!llmHealth.value) {
+    return '尚未发起检查。'
+  }
+  if (llmHealth.value.connection_error === 'placeholder_config_detected') {
+    return '连接测试已跳过，因为配置仍是示例占位值。'
+  }
+  if (llmHasPlaceholderValues.value) {
+    return '检测到示例占位值，请编辑 backend/.env 并替换真实配置。'
+  }
+  if (llmHealth.value.connection_status === 'ok') {
+    return '连通性测试已完成，页面只展示脱敏后的连接结果。'
+  }
+  if (llmHealth.value.connection_status === 'error' || llmHealth.value.connection_status === 'skipped') {
+    return formatLlmConnectionError(llmHealth.value.connection_error)
+  }
+  return '后端已返回当前配置状态，页面不会展示完整 API Key。'
+})
+
+const llmHealthFields = computed(() => {
+  if (!llmHealth.value) {
+    return []
+  }
+
+  return [
+    { label: '状态', value: llmHealth.value.status || 'unknown' },
+    { label: '.env', value: llmHealth.value.env_file_exists ? '存在' : '不存在' },
+    { label: 'API Key', value: formatLlmConfigStatus('OPENAI_API_KEY', llmHealth.value.has_api_key) },
+    { label: 'Key 预览', value: llmHealth.value.api_key_preview || '未返回' },
+    { label: 'API Base', value: formatLlmConfigStatus('OPENAI_API_BASE', llmHealth.value.has_api_base) },
+    { label: 'Base 地址', value: llmHealth.value.api_base || '未配置' },
+    { label: '模型', value: formatLlmConfigStatus('OPENAI_MODEL', llmHealth.value.has_model) },
+    { label: '模型名', value: llmHealth.value.model || '未配置' },
+    { label: 'Timeout', value: `${llmHealth.value.timeout_seconds ?? '-'} 秒` },
+    { label: '连接状态', value: formatLlmConnectionStatus(llmHealth.value.connection_status) },
+    { label: '连接错误', value: formatLlmConnectionError(llmHealth.value.connection_error) },
+    { label: '检查时间', value: llmHealth.value.checked_at ? formatDateTime(llmHealth.value.checked_at) : '—' },
+  ]
+})
+
+
 const addLog = (message, level = 'info') => {
   const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false })
   consoleLogs.value.push({
@@ -715,6 +849,35 @@ const extractErrorMessage = (error) => {
   }
 
   return '未知错误'
+}
+
+const checkLlmHealth = async (checkConnection = false) => {
+  if (checkConnection) {
+    isTestingLlmConnection.value = true
+  } else {
+    isCheckingLlmHealth.value = true
+  }
+  llmHealthError.value = null
+
+  try {
+    addLog(checkConnection ? '[AI] 正在测试 LLM 连接...' : '[AI] 正在检查 LLM 配置状态...', 'ai')
+    const response = await api.llmHealth(checkConnection)
+    llmHealth.value = response.data
+    addLog(checkConnection
+      ? `[AI] LLM 连接测试完成: ${response.data?.connection_status || 'unknown'}`
+      : `[AI] LLM 配置检查完成: ${response.data?.status || 'unknown'}`,
+    'ai')
+  } catch (err) {
+    llmHealth.value = null
+    llmHealthError.value = extractErrorMessage(err)
+    addLog(`[错误] LLM ${checkConnection ? '连接测试' : '配置检查'}失败: ${llmHealthError.value}`, 'error')
+  } finally {
+    if (checkConnection) {
+      isTestingLlmConnection.value = false
+    } else {
+      isCheckingLlmHealth.value = false
+    }
+  }
 }
 
 const openNativeFolderDialog = async () => {
@@ -2196,6 +2359,102 @@ const getHistoryTypeLabels = (type) => {
           >
             打开系统选择窗口
           </button>
+        </div>
+
+        <div class="relative w-full max-w-4xl rounded-lg border border-white/10 bg-slate-950/70 p-4 text-left space-y-4">
+          <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p class="text-xs text-slate-400 font-mono uppercase">AI 配置状态</p>
+              <p class="mt-1 text-sm text-slate-400">点击检查当前 LLM 配置完整性，仅展示后端返回的脱敏状态。</p>
+            </div>
+            <div class="flex flex-col gap-2 sm:flex-row">
+              <button
+                type="button"
+                class="inline-flex items-center justify-center gap-2 rounded-lg border border-cyan-300/30 px-4 py-2 text-sm text-cyan-100 bg-cyan-500/10 hover:bg-cyan-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="isCheckingLlmHealth || isTestingLlmConnection || isSelectingFolder || isGeneratingPlan || isExecutingPlan"
+                @click="checkLlmHealth(false)"
+              >
+                <Loader2 v-if="isCheckingLlmHealth" :size="16" class="animate-spin" />
+                <Shield v-else :size="16" />
+                {{ isCheckingLlmHealth ? '检查中...' : '检查 AI 配置状态' }}
+              </button>
+              <button
+                type="button"
+                class="inline-flex items-center justify-center gap-2 rounded-lg border border-amber-300/30 px-4 py-2 text-sm text-amber-100 bg-amber-500/10 hover:bg-amber-500/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                :disabled="isCheckingLlmHealth || isTestingLlmConnection || isSelectingFolder || isGeneratingPlan || isExecutingPlan"
+                @click="checkLlmHealth(true)"
+              >
+                <Loader2 v-if="isTestingLlmConnection" :size="16" class="animate-spin" />
+                <Sparkles v-else :size="16" />
+                {{ isTestingLlmConnection ? '测试中...' : '测试连接' }}
+              </button>
+            </div>
+          </div>
+
+          <div
+            class="rounded-lg border px-4 py-3"
+            :class="llmHealthToneClass"
+          >
+            <div class="flex items-start gap-3">
+              <CheckCircle v-if="llmHealth && llmHealth.connection_status === 'ok' && !llmHealthError" :size="18" class="mt-0.5 shrink-0" />
+              <AlertCircle v-else-if="llmHealth && llmHealth.connection_status === 'error' && !llmHealthError" :size="18" class="mt-0.5 shrink-0" />
+              <AlertTriangle v-else-if="llmHealth && (llmHealth.connection_status === 'skipped' || llmHealth.status === 'warning') && !llmHealthError" :size="18" class="mt-0.5 shrink-0" />
+              <AlertCircle v-else-if="llmHealthError" :size="18" class="mt-0.5 shrink-0" />
+              <Shield v-else :size="18" class="mt-0.5 shrink-0" />
+              <div class="space-y-1">
+                <p class="font-semibold">{{ llmHealthStatusLabel }}</p>
+                <p v-if="llmHealthError" class="text-sm">{{ llmHealthError }}</p>
+                <p v-else class="text-sm">{{ llmHealthSummaryText }}</p>
+              </div>
+            </div>
+          </div>
+
+          <div
+            v-if="llmHealth && llmHasPlaceholderValues"
+            class="rounded-lg border border-amber-400/20 bg-amber-500/10 px-4 py-3"
+          >
+            <div class="flex items-start gap-2 text-amber-100">
+              <AlertTriangle :size="16" class="mt-0.5 shrink-0 text-amber-300" />
+              <div>
+                <p class="font-medium">检测到示例占位值，请编辑 backend/.env 并替换真实配置</p>
+                <ul class="mt-2 flex flex-wrap gap-2 text-xs">
+                  <li
+                    v-for="field in llmPlaceholderFields"
+                    :key="field"
+                    class="rounded-full border border-amber-300/30 bg-slate-950/50 px-2 py-1 font-mono text-amber-100"
+                  >
+                    {{ field }}
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="llmHealth" class="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div
+              v-for="field in llmHealthFields"
+              :key="field.label"
+              class="rounded-lg border border-white/10 bg-slate-950/70 px-3 py-2"
+            >
+              <p class="text-xs text-slate-500 uppercase font-mono">{{ field.label }}</p>
+              <p class="mt-1 text-sm text-slate-100 break-all">{{ field.value }}</p>
+            </div>
+          </div>
+
+          <div v-if="llmHealth" class="rounded-lg border border-white/10 bg-slate-950/70 px-4 py-3">
+            <p class="text-xs text-slate-500 uppercase font-mono">Suggestions</p>
+            <ul v-if="Array.isArray(llmHealth.suggestions) && llmHealth.suggestions.length > 0" class="mt-2 space-y-2 text-sm text-slate-200">
+              <li
+                v-for="suggestion in llmHealth.suggestions"
+                :key="suggestion"
+                class="flex gap-2"
+              >
+                <AlertTriangle :size="16" class="mt-0.5 shrink-0 text-amber-300" />
+                <span>{{ suggestion }}</span>
+              </li>
+            </ul>
+            <p v-else class="mt-2 text-sm text-slate-400">当前未发现额外配置建议。</p>
+          </div>
         </div>
 
         <div v-if="targetPath" class="relative w-full max-w-4xl rounded-lg border border-emerald-300/20 bg-slate-950/70 p-4 text-left">
