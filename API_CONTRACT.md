@@ -577,6 +577,97 @@ Dry-run a plan to check for conflicts and safety issues without executing.
 
 ---
 
+## 16. GET /api/llm_health
+
+Lightweight LLM configuration self-check. By default this endpoint only inspects configuration completeness and does not make a real LLM request. Pass `check_connection=true` to run a minimal connectivity test with the current `OPENAI_API_KEY`, `OPENAI_API_BASE`, and `OPENAI_MODEL`.
+
+**Query params**
+- `check_connection` (optional, boolean) - defaults to `false`
+
+**Response**
+```json
+{
+  "env_file_exists": true,
+  "has_api_key": true,
+  "api_key_preview": "sk-1...9abc",
+  "has_api_base": true,
+  "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "has_model": true,
+  "model": "qwen-max",
+  "timeout_seconds": 180,
+  "status": "ok",
+  "suggestions": [],
+  "has_placeholder_values": false,
+  "placeholder_fields": [],
+  "connection_status": null,
+  "connection_error": null,
+  "checked_at": null
+}
+```
+
+**Response when placeholder values are detected**
+```json
+{
+  "env_file_exists": true,
+  "has_api_key": false,
+  "api_key_preview": "your...here",
+  "has_api_base": false,
+  "api_base": "https://your-openai-compatible-base-url/v1",
+  "has_model": false,
+  "model": "your_model_name_here",
+  "timeout_seconds": 180,
+  "status": "warning",
+  "suggestions": [
+    "OPENAI_API_KEY 仍是示例占位值，请替换为真实值",
+    "OPENAI_API_BASE 仍是示例占位值，请替换为真实值",
+    "OPENAI_MODEL 仍是示例占位值，请替换为真实值"
+  ],
+  "has_placeholder_values": true,
+  "placeholder_fields": ["OPENAI_API_KEY", "OPENAI_API_BASE", "OPENAI_MODEL"],
+  "connection_status": null,
+  "connection_error": null,
+  "checked_at": null
+}
+```
+
+**Response when `check_connection=true`**
+```json
+{
+  "env_file_exists": true,
+  "has_api_key": true,
+  "api_key_preview": "sk-1...9abc",
+  "has_api_base": true,
+  "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "has_model": true,
+  "model": "qwen-max",
+  "timeout_seconds": 180,
+  "status": "ok",
+  "suggestions": [],
+  "has_placeholder_values": false,
+  "placeholder_fields": [],
+  "connection_status": "ok",
+  "connection_error": null,
+  "checked_at": "2026-05-06T12:34:56+00:00"
+}
+```
+
+- `api_key_preview` is always masked and never returns the full key.
+- `has_api_key` / `has_api_base` / `has_model` mean effectively configured. Placeholder values are treated as invalid.
+- `has_placeholder_values` indicates whether any known example placeholder values were detected.
+- `placeholder_fields` lists which fields are still using example placeholder values.
+- `connection_error` is sanitized and never returns the raw upstream error or any secret value.
+  - `placeholder_config_detected`: connection test was requested but example placeholder values were still present
+- `connection_status` values:
+  - `null`: no connection test was requested
+  - `ok`: minimal connectivity test succeeded
+  - `error`: connectivity test failed
+  - `skipped`: connectivity test was requested but required config was missing or placeholder-valued
+- `status` values:
+  - `ok`: required configuration is complete and effective
+  - `warning`: one or more required fields are missing, placeholder-valued, or timeout parsing fell back to the default
+
+---
+
 ## Error Response Format
 
 All error responses follow FastAPI's standard format:

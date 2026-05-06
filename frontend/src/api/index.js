@@ -7,8 +7,13 @@ export const api = {
   cancelTask: (taskId) => 
     axios.post('/api/cancel_task', { task_id: taskId }),
 
-  selectFolder: () => 
+  selectFolder: () =>
     axios.get('/api/select_folder'),
+
+  llmHealth: (checkConnection = false) =>
+    axios.get('/api/llm_health', {
+      params: checkConnection ? { check_connection: true } : undefined,
+    }),
 
   lockFolder: (targetPath) => 
     axios.post('/api/lock_folder', { target_path: targetPath }),

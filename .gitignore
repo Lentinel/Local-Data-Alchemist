@@ -16,4 +16,7 @@ __pycache__/
 backend/temp/
 sample_messy_folder/snapshot.json
 sample_messy_folder/.alchemy_trash/
+sample_messy_folder/.alchemy_history/
+.claude/worktrees/
+.claude/settings.local.json
 tmp_llm_test/
