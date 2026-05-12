@@ -13,7 +13,7 @@ export default defineConfig({
       '/api': {
         target: apiTarget,
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, '')
+        // 后端已统一使用 /api 前缀，无需重写
       }
     }
   }

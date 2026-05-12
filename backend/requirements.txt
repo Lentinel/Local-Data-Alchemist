@@ -1,6 +1,11 @@
-fastapi
-uvicorn
-python-multipart
-openai
-python-dotenv
-httpx
+fastapi==0.135.1
+uvicorn==0.41.0
+python-multipart==0.0.22
+openai==2.24.0
+python-dotenv==1.2.2
+httpx==0.28.1
+pydantic==2.12.5
+pydantic-settings==2.6.1
+pdfplumber==0.11.9
+openpyxl==3.1.5
+reportlab==4.5.0

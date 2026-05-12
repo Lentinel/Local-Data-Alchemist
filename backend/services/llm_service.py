@@ -13,36 +13,13 @@ from fastapi import HTTPException
 
 from models.schemas import ActionPlanItem, FileInfo
 from utils.constants import ALLOWED_ACTIONS
-from utils.helpers import classify_file
+from utils.helpers import classify_file, strip_markdown_fence, should_translate_to_zh
 from utils.security import resolve_inside_target
 from services.file_service import peek_file_content
 
 
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=True)
-
-
-def strip_markdown_fence(content: str) -> str:
-    cleaned = content.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.removeprefix("```json").removeprefix("```").strip()
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].strip()
-    return cleaned
-
-
-def should_translate_to_zh(text: str | None) -> bool:
-    if not isinstance(text, str):
-        return False
-    stripped = text.strip()
-    if not stripped:
-        return False
-    if re.search(r"[\u4e00-\u9fff]", stripped):
-        return False
-    if not re.search(r"[A-Za-z]", stripped):
-        return False
-    ascii_letters = sum(1 for ch in stripped if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
-    return (ascii_letters / max(len(stripped), 1)) >= 0.12
 
 
 def build_openai_client(timeout_seconds: int, api_key: str | None = None, api_base: str | None = None) -> OpenAI:
@@ -255,6 +232,94 @@ def build_file_snippets(target_dir: Path, files: list[FileInfo]) -> list[dict]:
             }
         )
     return snippets
+
+
+def analyze_image_with_llm(image_path: Path, max_retries: int = 1) -> str:
+    """使用多模态 LLM 分析图片内容。
+    
+    Args:
+        image_path: 图片文件路径
+        max_retries: 最大重试次数
+        
+    Returns:
+        图片内容描述文本
+    """
+    import base64
+    
+    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    api_base = (os.getenv("OPENAI_API_BASE") or "").strip()
+    model = (os.getenv("OPENAI_MODEL") or "").strip()
+    timeout_seconds_raw = (os.getenv("OPENAI_TIMEOUT_SECONDS") or "").strip()
+    timeout_seconds = 60  # 图片分析使用较短超时
+    if timeout_seconds_raw:
+        try:
+            timeout_seconds = min(int(float(timeout_seconds_raw)), 120)
+        except ValueError:
+            timeout_seconds = 60
+
+    if not api_key or not api_base or not model:
+        return "[图片分析不可用：LLM 配置不完整]"
+
+    try:
+        with open(image_path, "rb") as f:
+            image_data = base64.b64encode(f.read()).decode("utf-8")
+        
+        extension = image_path.suffix.lower()
+        mime_map = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+            ".bmp": "image/bmp",
+        }
+        mime_type = mime_map.get(extension, "image/png")
+
+        client = OpenAI(
+            api_key=api_key,
+            base_url=api_base,
+            http_client=httpx.Client(trust_env=False, timeout=timeout_seconds),
+        )
+
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是图片内容分析专家。请用简体中文描述图片内容，重点关注："
+                        "1) 如果是票据/发票/收据，提取商户名、金额、日期、票据号"
+                        "2) 如果是截图，描述截图内容和关键信息"
+                        "3) 如果是照片，描述场景和主要内容"
+                        "4) 如果是图表/数据可视化，描述数据趋势和关键数值"
+                        "请用简洁的中文描述，不超过200字。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_data}",
+                            },
+                        },
+                        {
+                            "type": "text",
+                            "text": "请分析这张图片的内容。",
+                        },
+                    ],
+                },
+            ],
+            temperature=0,
+            max_tokens=500,
+        )
+
+        content = response.choices[0].message.content or ""
+        return content.strip() if content.strip() else "[图片分析返回为空]"
+
+    except Exception as e:
+        return f"[图片分析失败: {str(e)[:100]}]"
 
 
 def call_llm_generate_plan(file_snippets: list[dict]) -> list[ActionPlanItem]:
@@ -631,22 +696,4 @@ async def generate_plan_impl(request) -> dict:
             "已请求生成仅 JSON 的炼金计划（包含 extracted_info）" if not llm_error else f"LLM 不可用，已启用本地兜底计划：{llm_error}",
         ],
         "plan": [item.dict() for item in plan],
-    }
-
-
-async def lock_folder_impl(request) -> dict:
-    from models.schemas import FolderRequest
-    from utils.security import get_target_dir
-    from services.file_service import scan_target_files, build_analysis
-    
-    if not isinstance(request, FolderRequest):
-        raise ValueError("Invalid request type")
-    
-    target_dir = get_target_dir(request.target_path)
-    files_info = scan_target_files(target_dir)
-    return {
-        "status": "success",
-        "target_path": str(target_dir),
-        "files": files_info,
-        "analysis": build_analysis(files_info),
     }

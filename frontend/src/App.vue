@@ -37,7 +37,7 @@ const isUndoing = ref(false)
 const loadingTipIndex = ref(0)
 const animatedFinancialTotal = ref(0)
 const targetPath = ref(null)
-const manualTargetPath = ref('C:\\Users\\Lentinel\\Desktop\\trae\\sample_messy_folder')
+const manualTargetPath = ref('')
 const files = ref([])
 const analysis = ref(null)
 const actionPlan = ref([])
@@ -912,6 +912,70 @@ const openNativeFolderDialog = async () => {
   } finally {
     isSelectingFolder.value = false
   }
+}
+
+// 拖拽状态
+const isDragging = ref(false)
+let dragCounter = 0
+
+const handleDragEnter = (e) => {
+  e.preventDefault()
+  e.stopPropagation()
+  dragCounter++
+  if (e.dataTransfer.types.includes('Files')) {
+    isDragging.value = true
+  }
+}
+
+const handleDragLeave = (e) => {
+  e.preventDefault()
+  e.stopPropagation()
+  dragCounter--
+  if (dragCounter === 0) {
+    isDragging.value = false
+  }
+}
+
+const handleDragOver = (e) => {
+  e.preventDefault()
+  e.stopPropagation()
+}
+
+const handleDrop = async (e) => {
+  e.preventDefault()
+  e.stopPropagation()
+  isDragging.value = false
+  dragCounter = 0
+
+  const items = e.dataTransfer.items
+  if (!items || items.length === 0) return
+
+  // 尝试获取文件系统句柄（现代浏览器支持）
+  for (const item of items) {
+    if (item.kind === 'file') {
+      // 尝试使用 FileSystemHandle API
+      if (typeof item.getAsFileSystemHandle === 'function') {
+        try {
+          const handle = await item.getAsFileSystemHandle()
+          if (handle.kind === 'directory') {
+            // 获取目录路径（需要后端配合）
+            addLog('[系统] 检测到拖拽的文件夹', 'info')
+            // 由于浏览器安全限制，无法直接获取绝对路径
+            // 提示用户手动输入路径
+            error.value = '浏览器安全限制：拖拽文件夹后，请在输入框中手动输入该文件夹的完整路径'
+            addLog('[提示] 由于浏览器安全限制，请手动输入拖拽文件夹的完整路径', 'warning')
+            return
+          }
+        } catch (err) {
+          console.log('FileSystemHandle not supported or failed:', err)
+        }
+      }
+    }
+  }
+
+  // 降级处理：提示用户手动输入
+  error.value = '检测到拖拽操作。由于浏览器安全限制，请在输入框中手动输入文件夹的完整路径'
+  addLog('[提示] 拖拽功能受限于浏览器安全策略，请手动输入路径', 'warning')
 }
 
 const lockManualTarget = async () => {
@@ -2307,8 +2371,25 @@ const getHistoryTypeLabels = (type) => {
     </header>
 
     <main class="w-full space-y-10">
-      <section v-if="!isGeneratingPlan" class="relative min-h-80 rounded-lg overflow-hidden glass-strong border border-emerald-300/20 flex flex-col items-center justify-center gap-6 p-8 text-center">
+      <section
+        v-if="!isGeneratingPlan"
+        class="relative min-h-80 rounded-lg overflow-hidden glass-strong border border-emerald-300/20 flex flex-col items-center justify-center gap-6 p-8 text-center transition-all duration-200"
+        :class="{ 'ring-2 ring-emerald-400/50 bg-emerald-500/5': isDragging }"
+        @dragenter="handleDragEnter"
+        @dragleave="handleDragLeave"
+        @dragover="handleDragOver"
+        @drop="handleDrop"
+      >
         <div class="absolute inset-0 scan-field opacity-40"></div>
+        <!-- 拖拽覆盖层 -->
+        <div
+          v-if="isDragging"
+          class="absolute inset-0 z-10 flex flex-col items-center justify-center bg-slate-950/80 backdrop-blur-sm border-2 border-dashed border-emerald-400/60 rounded-lg"
+        >
+          <FolderOpen :size="64" class="text-emerald-300 animate-bounce" />
+          <p class="mt-4 text-xl font-bold text-emerald-200">释放以选择文件夹</p>
+          <p class="mt-2 text-sm text-emerald-300/70">拖拽文件夹到此处</p>
+        </div>
         <div class="relative p-5 rounded-lg bg-emerald-300/10 text-emerald-200 border border-emerald-300/20">
           <FolderOpen v-if="!isSelectingFolder" :size="56" />
           <Loader2 v-else :size="56" class="animate-spin" />
@@ -2318,7 +2399,7 @@ const getHistoryTypeLabels = (type) => {
           <h2 class="text-3xl font-black text-slate-50">
             {{ isSelectingFolder ? '正在锁定本地目标...' : '选择本地目标目录' }}
           </h2>
-          <p class="text-slate-400">锁定一个本地目录，炼金炉将在其中直接嗅探、规划、执行和回滚。</p>
+          <p class="text-slate-400">锁定一个本地目录，炼金炉将在其中直接嗅探、规划、执行和回滚。<br>支持拖拽文件夹到此区域（需手动确认路径）。</p>
         </div>
 
         <button

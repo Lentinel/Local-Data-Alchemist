@@ -34,7 +34,6 @@ from .storage import (
     write_history,
     list_history,
     get_history,
-    get_safe_sort_key,
 )
 
 from .task_manager import (

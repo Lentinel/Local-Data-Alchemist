@@ -48,6 +48,45 @@ CATEGORY_RULES = {
     },
 }
 
+# 文件名模式分类规则（优先级高于扩展名分类）
+# 格式: { category: [正则表达式列表] }
+FILENAME_PATTERNS = {
+    "images": [
+        r"(?i)screenshot|screen.?shot|截图|屏幕截图",
+        r"(?i)^IMG[_-]\d{8}",
+        r"(?i)^DCIM|^DSC[_N]|^P\d{7,}",
+        r"(?i)photo|照片|图片",
+    ],
+    "logs": [
+        r"(?i)^error|crash|dump|trace|debug",
+        r"(?i)log[_-]?\d|日志",
+        r"(?i)stderr|stdout|core\.\d+",
+    ],
+    "documents": [
+        r"(?i)invoice|发票|票据|收据|receipt",
+        r"(?i)contract|合同|协议",
+        r"(?i)report|报告|报表",
+        r"(?i)resume|简历|CV",
+        r"(?i)meeting|会议|纪要",
+    ],
+    "archives": [
+        r"(?i)backup|备份",
+        r"(?i)release|发布|部署",
+    ],
+    "code": [
+        r"(?i)config|配置|settings",
+        r"(?i)Makefile|Dockerfile|\.env\b",
+    ],
+}
+
+# 临时/缓存文件名模式（用于 delete 建议）
+TEMP_FILE_PATTERNS = [
+    r"(?i)^(tmp|temp|cache|~)",
+    r"(?i)\.(tmp|temp|cache|bak|swp|swo)$",
+    r"(?i)^\.DS_Store$|^Thumbs\.db$|^desktop\.ini$",
+    r"(?i)^__MACOSX|^\._",
+]
+
 CATEGORY_LABELS = {
     "logs": "日志",
     "images": "图片",

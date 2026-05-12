@@ -89,6 +89,25 @@ class UndoPlanRequest(BaseModel):
         return v
 
 
+class SelectiveUndoRequest(BaseModel):
+    target_path: str = Field(..., min_length=1, description="目标目录路径")
+    files: list[str] = Field(..., min_length=1, description="要回滚的文件原始路径列表")
+
+    @field_validator("target_path")
+    @classmethod
+    def validate_target_path_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("目标路径不能为空或仅包含空白字符")
+        return v
+
+    @field_validator("files")
+    @classmethod
+    def validate_files_not_empty(cls, v: list[str]) -> list[str]:
+        if not v or len(v) == 0:
+            raise ValueError("文件列表不能为空")
+        return v
+
+
 class FilePreviewRequest(BaseModel):
     target_path: str = Field(..., min_length=1, description="目标目录路径")
     file_path: str = Field(..., min_length=1, description="要预览的文件相对路径")

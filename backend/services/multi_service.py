@@ -4,13 +4,13 @@ from pathlib import Path
 from fastapi import HTTPException
 
 from models.schemas import FileInfo
+from utils.helpers import should_translate_to_zh
 from utils.security import get_target_dir
 from services.file_service import scan_target_files, build_analysis, build_file_snippets
 from services.llm_service import (
     call_llm_generate_plan,
     generate_local_fallback_plan,
     translate_texts_to_zh,
-    should_translate_to_zh,
     build_llm_prompt,
 )
 

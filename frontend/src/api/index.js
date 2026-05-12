@@ -80,8 +80,23 @@ export const api = {
       rename_plan: renamePlan 
     }),
 
-  dashboardStats: (targetPath) => 
+  dashboardStats: (targetPath) =>
     axios.post('/api/dashboard_stats', { target_path: targetPath }),
+
+  directoryTree: (targetPath) =>
+    axios.post('/api/directory_tree', { target_path: targetPath }),
+
+  analyzePlan: (targetPath, plan) =>
+    axios.post('/api/analyze_plan', { target_path: targetPath, plan }),
+
+  selectiveUndo: (targetPath, files) =>
+    axios.post('/api/selective_undo', { target_path: targetPath, files }),
+
+  exportPdf: (targetPath) =>
+    axios.post('/api/export_pdf', { target_path: targetPath }, { responseType: 'blob' }),
+
+  exportExcel: (targetPath) =>
+    axios.post('/api/export_excel', { target_path: targetPath }, { responseType: 'blob' }),
 
   multiScan: (targetPaths) => 
     axios.post('/api/multi_scan', { target_paths: targetPaths }),

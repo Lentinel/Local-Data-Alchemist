@@ -8,6 +8,8 @@ from .file_service import (
     calculate_dashboard_stats,
     preview_plan_impl,
     preview_file_impl,
+    lock_folder_impl,
+    build_directory_tree,
 )
 
 from .template_service import (
@@ -34,24 +36,25 @@ from .duplicate_service import (
 )
 
 from .llm_service import (
-    strip_markdown_fence,
-    should_translate_to_zh,
     build_openai_client,
     translate_texts_to_zh,
     parse_llm_plan,
     generate_local_fallback_plan,
     call_llm_generate_plan,
+    analyze_image_with_llm,
     llm_debug_info,
     llm_health_info,
     build_llm_prompt,
     generate_plan_impl,
-    lock_folder_impl,
 )
 
 from .plan_service import (
     execute_plan_impl,
     undo_plan_impl,
+    selective_undo_impl,
     execute_plan_async,
+    score_plan_confidence,
+    detect_plan_conflicts,
 )
 
 from .multi_service import (
@@ -86,13 +89,12 @@ __all__ = [
     'calculate_file_hash',
     'detect_duplicates',
     'keep_duplicate',
-    'strip_markdown_fence',
-    'should_translate_to_zh',
     'build_openai_client',
     'translate_texts_to_zh',
     'parse_llm_plan',
     'generate_local_fallback_plan',
     'call_llm_generate_plan',
+    'analyze_image_with_llm',
     'llm_debug_info',
     'llm_health_info',
     'build_llm_prompt',
@@ -100,10 +102,14 @@ __all__ = [
     'lock_folder_impl',
     'execute_plan_impl',
     'undo_plan_impl',
+    'selective_undo_impl',
     'execute_plan_async',
+    'score_plan_confidence',
+    'detect_plan_conflicts',
     'scan_and_analyze_single_path',
     'normalize_and_deduplicate_paths',
     'multi_scan',
     'generate_plan_for_single_path_v2',
     'multi_generate_plan',
+    'build_directory_tree',
 ]

@@ -1,5 +1,7 @@
 import os
+import csv
 import base64
+import io
 from pathlib import Path
 from collections import Counter
 from datetime import date, datetime, timedelta
@@ -13,6 +15,22 @@ from utils.constants import (
 )
 from utils.security import resolve_inside_target, to_target_relative
 from utils.storage import list_history
+
+# PDF 解析（延迟导入，避免未安装时崩溃）
+_pdfplumber_available = False
+try:
+    import pdfplumber
+    _pdfplumber_available = True
+except ImportError:
+    pass
+
+# Excel 解析（延迟导入）
+_openpyxl_available = False
+try:
+    import openpyxl
+    _openpyxl_available = True
+except ImportError:
+    pass
 
 
 def scan_target_files(target_dir: Path) -> list[dict]:
@@ -34,7 +52,7 @@ def scan_target_files(target_dir: Path) -> list[dict]:
                     "name": filename,
                     "path": file_rel_path,
                     "extension": extension,
-                    "category": classify_file(extension),
+                    "category": classify_file(extension, filename),
                     "size": file_path.stat().st_size,
                 }
             )
@@ -42,15 +60,153 @@ def scan_target_files(target_dir: Path) -> list[dict]:
     return files_info
 
 
-def peek_file_content(file_path: Path, max_bytes: int = 512) -> str:
-    if file_path.suffix.lower() not in TEXT_EXTENSIONS:
-        return "[Binary File]"
-
+def _extract_pdf_text(file_path: Path, max_chars: int = 2000) -> str:
+    """从 PDF 文件中提取文本内容。
+    
+    Args:
+        file_path: PDF 文件路径
+        max_chars: 最大提取字符数
+        
+    Returns:
+        提取的文本内容，失败时返回错误信息
+    """
+    if not _pdfplumber_available:
+        return "[PDF 解析库未安装，请运行: pip install pdfplumber]"
+    
     try:
-        with file_path.open("rb") as file:
-            return file.read(max_bytes).decode("utf-8", errors="ignore").strip()
-    except OSError:
-        return "[Unreadable File]"
+        text_parts = []
+        with pdfplumber.open(str(file_path)) as pdf:
+            for i, page in enumerate(pdf.pages[:5]):  # 最多读取前5页
+                page_text = page.extract_text()
+                if page_text:
+                    text_parts.append(page_text.strip())
+                if sum(len(t) for t in text_parts) >= max_chars:
+                    break
+            
+            # 提取表格数据
+            tables_text = []
+            for page in pdf.pages[:3]:  # 前3页的表格
+                tables = page.extract_tables()
+                for table in tables[:2]:  # 每页最多2个表格
+                    for row in table[:10]:  # 每个表格最多10行
+                        if row:
+                            tables_text.append(" | ".join(str(cell or "") for cell in row))
+        
+        result = "\n".join(text_parts)
+        if tables_text:
+            result += "\n\n[表格数据]\n" + "\n".join(tables_text)
+        
+        return result[:max_chars] if result else "[PDF 文件无文本内容（可能是扫描件）]"
+    except Exception as e:
+        return f"[PDF 解析失败: {str(e)}]"
+
+
+def _extract_excel_info(file_path: Path, max_rows: int = 20) -> str:
+    """从 Excel 文件中提取结构化信息。
+    
+    Args:
+        file_path: Excel 文件路径
+        max_rows: 最大读取行数
+        
+    Returns:
+        提取的结构化信息
+    """
+    if not _openpyxl_available:
+        return "[Excel 解析库未安装，请运行: pip install openpyxl]"
+    
+    try:
+        wb = openpyxl.load_workbook(str(file_path), read_only=True, data_only=True)
+        info_parts = []
+        
+        for sheet_name in wb.sheetnames[:3]:  # 最多3个sheet
+            ws = wb[sheet_name]
+            info_parts.append(f"[Sheet: {sheet_name}]")
+            
+            rows = []
+            for i, row in enumerate(ws.iter_rows(values_only=True)):
+                if i >= max_rows:
+                    info_parts.append(f"... (共 {ws.max_row} 行，仅显示前 {max_rows} 行)")
+                    break
+                cells = [str(cell) if cell is not None else "" for cell in row]
+                if any(cells):  # 跳过空行
+                    rows.append(" | ".join(cells))
+            
+            info_parts.extend(rows)
+            info_parts.append("")
+        
+        wb.close()
+        return "\n".join(info_parts) if info_parts else "[Excel 文件为空]"
+    except Exception as e:
+        return f"[Excel 解析失败: {str(e)}]"
+
+
+def _extract_csv_info(file_path: Path, max_rows: int = 20) -> str:
+    """从 CSV 文件中提取结构化信息。
+    
+    Args:
+        file_path: CSV 文件路径
+        max_rows: 最大读取行数
+        
+    Returns:
+        提取的结构化信息
+    """
+    try:
+        with file_path.open("r", encoding="utf-8", errors="ignore") as f:
+            reader = csv.reader(f)
+            rows = []
+            for i, row in enumerate(reader):
+                if i >= max_rows:
+                    rows.append(f"... (仅显示前 {max_rows} 行)")
+                    break
+                rows.append(" | ".join(row))
+            return "\n".join(rows) if rows else "[CSV 文件为空]"
+    except Exception as e:
+        return f"[CSV 解析失败: {str(e)}]"
+
+
+def peek_file_content(file_path: Path, max_bytes: int = 512) -> str:
+    """读取文件内容摘要。
+    
+    支持文本文件、PDF、Excel、CSV 等格式。
+    
+    Args:
+        file_path: 文件路径
+        max_bytes: 文本文件最大读取字节数
+        
+    Returns:
+        文件内容摘要
+    """
+    extension = file_path.suffix.lower()
+    
+    # PDF 文件
+    if extension == ".pdf":
+        return _extract_pdf_text(file_path, max_chars=max_bytes * 4)
+    
+    # Excel 文件
+    if extension in {".xlsx", ".xls"}:
+        return _extract_excel_info(file_path)
+    
+    # CSV 文件
+    if extension == ".csv":
+        return _extract_csv_info(file_path)
+    
+    # 文本文件
+    if extension in TEXT_EXTENSIONS:
+        try:
+            with file_path.open("rb") as file:
+                return file.read(max_bytes).decode("utf-8", errors="ignore").strip()
+        except OSError:
+            return "[Unreadable File]"
+    
+    # 图片文件 - 使用多模态 LLM 分析
+    if extension in IMAGE_EXTENSIONS:
+        try:
+            from services.llm_service import analyze_image_with_llm
+            return analyze_image_with_llm(file_path)
+        except Exception:
+            return "[图片文件]"
+    
+    return "[Binary File]"
 
 
 def get_file_preview(file_path: Path, max_bytes: int = 10240, max_image_bytes: int = 10 * 1024 * 1024) -> dict:
@@ -101,12 +257,158 @@ def get_file_preview(file_path: Path, max_bytes: int = 10240, max_image_bytes: i
 
     if extension == ".pdf":
         preview["type"] = "pdf"
-        preview["content"] = "PDF文件预览功能待实现"
+        preview["content"] = _extract_pdf_text(file_path, max_chars=max_bytes * 2)
+        preview["page_count"] = None
+        if _pdfplumber_available:
+            try:
+                with pdfplumber.open(str(file_path)) as pdf:
+                    preview["page_count"] = len(pdf.pages)
+            except Exception:
+                pass
+        return preview
+
+    if extension in {".xlsx", ".xls"}:
+        preview["type"] = "spreadsheet"
+        preview["content"] = _extract_excel_info(file_path)
+        return preview
+
+    if extension == ".csv":
+        preview["type"] = "spreadsheet"
+        preview["content"] = _extract_csv_info(file_path)
         return preview
 
     preview["type"] = "binary"
     preview["content"] = "[二进制文件，不支持预览]"
     return preview
+
+
+def build_directory_tree(target_dir: Path, plan: list[dict] = None) -> dict:
+    """构建目录树结构，可选包含计划中的目标路径。
+    
+    Args:
+        target_dir: 目标目录路径
+        plan: 可选的执行计划，用于预览执行后的目录结构
+        
+    Returns:
+        目录树结构字典
+    """
+    tree = {
+        "name": target_dir.name or str(target_dir),
+        "path": ".",
+        "type": "directory",
+        "children": [],
+        "file_count": 0,
+        "total_size": 0,
+    }
+    
+    # 扫描当前目录结构
+    def scan_dir(current_path: Path, relative_path: str = ".", node: dict = None):
+        if node is None:
+            node = tree
+        
+        try:
+            entries = sorted(current_path.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except PermissionError:
+            return
+        
+        for entry in entries:
+            # 跳过隐藏文件和系统文件
+            if entry.name.startswith('.') or entry.name in {'snapshot.json'}:
+                continue
+            
+            entry_relative = f"{relative_path}/{entry.name}" if relative_path != "." else entry.name
+            
+            if entry.is_dir():
+                if entry.name == '.alchemy_trash':
+                    continue
+                dir_node = {
+                    "name": entry.name,
+                    "path": entry_relative,
+                    "type": "directory",
+                    "children": [],
+                    "file_count": 0,
+                    "total_size": 0,
+                }
+                node["children"].append(dir_node)
+                scan_dir(entry, entry_relative, dir_node)
+                node["file_count"] += dir_node["file_count"]
+                node["total_size"] += dir_node["total_size"]
+            else:
+                try:
+                    file_size = entry.stat().st_size
+                except OSError:
+                    file_size = 0
+                
+                file_node = {
+                    "name": entry.name,
+                    "path": entry_relative,
+                    "type": "file",
+                    "extension": entry.suffix.lower(),
+                    "size": file_size,
+                    "category": classify_file(entry.suffix.lower()),
+                }
+                node["children"].append(file_node)
+                node["file_count"] += 1
+                node["total_size"] += file_size
+    
+    scan_dir(target_dir)
+    
+    # 如果有计划，添加计划中的目标路径预览
+    if plan:
+        planned_paths = set()
+        for item in plan:
+            if item.get("target_path") and item.get("action") in {"move", "rename_and_move"}:
+                planned_paths.add(item["target_path"])
+        
+        if planned_paths:
+            tree["planned_structure"] = _build_planned_tree(planned_paths)
+    
+    return tree
+
+
+def _build_planned_tree(planned_paths: set) -> dict:
+    """从计划路径构建预览目录树。"""
+    root = {
+        "name": "执行后预览",
+        "path": ".",
+        "type": "directory",
+        "children": [],
+    }
+    
+    for path in sorted(planned_paths):
+        parts = path.replace("\\", "/").split("/")
+        current = root
+        
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                # 文件
+                current["children"].append({
+                    "name": part,
+                    "path": path,
+                    "type": "file",
+                    "is_planned": True,
+                })
+            else:
+                # 目录
+                found = False
+                for child in current["children"]:
+                    if child["name"] == part and child["type"] == "directory":
+                        current = child
+                        found = True
+                        break
+                
+                if not found:
+                    new_dir = {
+                        "name": part,
+                        "path": "/".join(parts[:i+1]),
+                        "type": "directory",
+                        "children": [],
+                        "is_planned": True,
+                    }
+                    current["children"].append(new_dir)
+                    current = new_dir
+    
+    return root
 
 
 def build_analysis(files_info: list[dict]) -> dict:
@@ -520,6 +822,15 @@ def preview_plan_impl(
 
 
 def preview_file_impl(target_dir: Path, relative_file_path: str) -> dict:
+    """预览文件内容。
+    
+    Args:
+        target_dir: 目标目录路径
+        relative_file_path: 文件相对路径
+        
+    Returns:
+        包含预览信息的字典
+    """
     from fastapi import HTTPException
     from utils.security import resolve_inside_target
     
@@ -535,4 +846,29 @@ def preview_file_impl(target_dir: Path, relative_file_path: str) -> dict:
     return {
         "status": "success",
         "preview": preview
+    }
+
+
+async def lock_folder_impl(request) -> dict:
+    """锁定目标目录并扫描文件。
+    
+    Args:
+        request: FolderRequest 请求对象
+        
+    Returns:
+        包含文件列表和分析结果的字典
+    """
+    from models.schemas import FolderRequest
+    from utils.security import get_target_dir
+    
+    if not isinstance(request, FolderRequest):
+        raise ValueError("Invalid request type")
+    
+    target_dir = get_target_dir(request.target_path)
+    files_info = scan_target_files(target_dir)
+    return {
+        "status": "success",
+        "target_path": str(target_dir),
+        "files": files_info,
+        "analysis": build_analysis(files_info),
     }

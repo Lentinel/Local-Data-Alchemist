@@ -10,7 +10,7 @@ const state = reactive({
   error: null,
   loadingTipIndex: 0,
   animatedFinancialTotal: 0,
-  manualTargetPath: 'C:\\Users\\Lentinel\\Desktop\\trae\\sample_messy_folder',
+  manualTargetPath: '',
   isSelectingFolder: false,
   isGeneratingPlan: false,
   isExecutingPlan: false,

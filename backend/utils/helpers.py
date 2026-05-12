@@ -1,3 +1,4 @@
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -24,12 +25,49 @@ def format_eta(seconds: float) -> str:
         return f"约 {hours} 小时 {minutes} 分"
 
 
-def classify_file(extension: str) -> str:
+def classify_file(extension: str, filename: str = "") -> str:
+    """智能文件分类：先按文件名模式匹配，再按扩展名匹配。
+    
+    Args:
+        extension: 文件扩展名
+        filename: 文件名（可选，用于模式匹配）
+        
+    Returns:
+        分类名称
+    """
+    from .constants import FILENAME_PATTERNS
+    
+    # 优先按文件名模式匹配
+    if filename:
+        for category, patterns in FILENAME_PATTERNS.items():
+            for pattern in patterns:
+                if re.search(pattern, filename):
+                    return category
+    
+    # 再按扩展名匹配
     ext = extension.lower()
     for category, extensions in CATEGORY_RULES.items():
         if ext in extensions:
             return category
+    
     return "unknown"
+
+
+def is_temp_file(filename: str) -> bool:
+    """判断文件是否为临时/缓存文件。
+    
+    Args:
+        filename: 文件名
+        
+    Returns:
+        如果是临时文件返回 True
+    """
+    from .constants import TEMP_FILE_PATTERNS
+    
+    for pattern in TEMP_FILE_PATTERNS:
+        if re.search(pattern, filename):
+            return True
+    return False
 
 
 def validate_filename(filename: str) -> tuple[bool, str | None]:
@@ -95,15 +133,38 @@ def sanitize_filename(name: str, fallback_prefix: str = "file") -> str:
 
 
 def get_safe_sort_key(history_item: dict) -> tuple:
+    """获取历史记录的安全排序键。
+    
+    Args:
+        history_item: 历史记录字典
+        
+    Returns:
+        排序元组，用于按时间排序
+    """
     created_at = history_item.get("created_at", "")
+    
+    if not created_at or not isinstance(created_at, str):
+        return (0, "")
+    
     try:
-        dt = datetime.fromisoformat(created_at)
-        return (dt, history_item.get("id", ""))
+        if "T" in created_at:
+            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            return (2, dt.isoformat())
+        else:
+            return (1, created_at)
     except (ValueError, TypeError):
-        return (datetime.min, created_at or history_item.get("id", ""))
+        return (0, created_at)
 
 
 def strip_markdown_fence(content: str) -> str:
+    """移除 Markdown 代码围栏。
+    
+    Args:
+        content: 可能包含 Markdown 代码围栏的文本
+        
+    Returns:
+        移除围栏后的文本
+    """
     if not content:
         return content
     content = content.strip()
@@ -122,12 +183,22 @@ def strip_markdown_fence(content: str) -> str:
 
 
 def should_translate_to_zh(text: str | None) -> bool:
-    if not text or not text.strip():
+    """判断文本是否需要翻译为中文。
+    
+    Args:
+        text: 待判断的文本
+        
+    Returns:
+        如果文本是英文且需要翻译则返回 True
+    """
+    if not isinstance(text, str):
         return False
-    text = text.strip()
-    has_chinese = any('\u4e00' <= c <= '\u9fff' for c in text)
-    if has_chinese:
+    stripped = text.strip()
+    if not stripped:
         return False
-    if len(text) < 20:
+    if re.search(r"[\u4e00-\u9fff]", stripped):
         return False
-    return True
+    if not re.search(r"[A-Za-z]", stripped):
+        return False
+    ascii_letters = sum(1 for ch in stripped if ("A" <= ch <= "Z") or ("a" <= ch <= "z"))
+    return (ascii_letters / max(len(stripped), 1)) >= 0.12
